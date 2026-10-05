@@ -5,6 +5,8 @@ import numpy as np
 import win32api
 import win32con
 
+from tracking import FollowMemory, MotionTracker, score_blob
+
 
 def _get_screen_size():
     """Primary-monitor size without the heavy pyautogui dependency."""
@@ -15,6 +17,19 @@ def _get_screen_size():
         from pyautogui import size as _pyautogui_size
         screen_size = _pyautogui_size()
         return (screen_size.width, screen_size.height)
+
+
+def _virtual_screen():
+    """Virtual-screen rect (left, top, width, height) across all monitors.
+    Falls back to the primary monitor when the metrics are unavailable."""
+    try:
+        return (win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN),
+                win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN),
+                win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN),
+                win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN))
+    except Exception:
+        w, h = _get_screen_size()
+        return (0, 0, w, h)
 
 
 class CaptureBackend:
@@ -120,17 +135,26 @@ class Screen:
         self.closest_rect = None
         self.img = None
         self.focus_area = (self.cfg.focus_area_x, self.cfg.focus_area_y)
+        # Capture anchoring: 'center' keeps the classic fixed square at the
+        # screen center; 'cursor' anchors the square on the mouse pointer,
+        # clamped to the virtual screen (the app's grab_around mechanism).
+        self.capture_mode = getattr(self.cfg, 'capture_mode', 'center')
+        self._vs_cache = {'t': 0.0, 'v': None}
+        # Tracking state (ported from the main app; off by default so
+        # existing configs behave exactly as before)
+        self.follow_enabled = bool(getattr(self.cfg, 'follow_enabled', False))
+        self.follow_seconds = float(getattr(self.cfg, 'follow_seconds', 20.0))
+        self.min_target_area = int(getattr(self.cfg, 'min_target_area', 0))
+        self.motion_lead = bool(getattr(self.cfg, 'motion_lead', False))
+        self.motion_lead_ms = float(getattr(self.cfg, 'motion_lead_ms', 40.0))
+        self.motion_max_lead_px = float(getattr(self.cfg, 'motion_max_lead_px', 30.0))
+        self.memory = FollowMemory()
+        self.tracker = MotionTracker()
+        self.last_target_abs = None
         self.dilate_kernel = np.ones(
             (self.cfg.group_close_target_blobs_threshold[0], self.cfg.group_close_target_blobs_threshold[1]),
             np.uint8
         )
-        self.click_test_points = [
-            (self.area_center[0], self.area_center[1]),
-            (self.area_center[0] + self.cfg.click_threshold, self.area_center[1]),
-            (self.area_center[0] - self.cfg.click_threshold, self.area_center[1]),
-            (self.area_center[0], self.area_center[1] + self.cfg.click_threshold),
-            (self.area_center[0], self.area_center[1] - self.cfg.click_threshold),
-        ]
 
         # Setup debug display
         if self.cfg.debug:
@@ -221,23 +245,103 @@ class Screen:
             region[3] - help_offset
         )
 
+    def _virtual_screen_cached(self):
+        """Virtual-screen rect, cached 2 s: display topology changes far
+        slower than the capture loop runs (same trick as the main app)."""
+        now = time.perf_counter()
+        if self._vs_cache['v'] is not None and now - self._vs_cache['t'] < 2.0:
+            return self._vs_cache['v']
+        v = _virtual_screen()
+        self._vs_cache['t'] = now
+        self._vs_cache['v'] = v
+        return v
+
+    def grab_around(self, x, y, help_offset=0):
+        """Capture a capture_area-sized square anchored on (x, y), clamped
+        to the virtual screen. Returns (img, origin, edges) where origin is
+        the region's (left, top) in screen coords and edges flags which
+        borders are true screen edges (items touching non-edge borders are
+        clipped by the region, not by the monitor)."""
+        vx, vy, vw, vh = self._virtual_screen_cached()
+        half_w = self.area[0] // 2
+        half_h = self.area[1] // 2
+        left = int(x) - half_w
+        top = int(y) - half_h - help_offset
+        l = max(left, vx)
+        t = max(top, vy)
+        r = min(left + self.area[0], vx + vw)
+        b = min(top + self.area[1], vy + vh)
+        edges = (l == vx, t == vy, r == vx + vw, b == vy + vh)
+        img = self.screenshot((l, t, r, b))
+        return img, (l, t), edges
+
+    def _capture_frame(self, help_offset):
+        """Grab this frame's image. Returns (img, center, origin, edges).
+        In 'center' mode this is the classic fixed screen-center square;
+        in 'cursor' mode it follows the mouse pointer (app mechanism)."""
+        if self.capture_mode == 'cursor':
+            try:
+                cx, cy = win32api.GetCursorPos()
+            except Exception:
+                cx, cy = self.screen_center
+            img, origin, edges = self.grab_around(cx, cy, help_offset)
+            center = (img.shape[1] // 2, img.shape[0] // 2)
+            return img, center, origin, edges
+
+        img = self.screenshot(self.get_region(self.area_region, help_offset))
+        return img, self.area_center, None, None
+
     def _is_within_focus_area(self, x, y):
         """Check if a point is within the focus area bounds."""
         return -self.focus_area[0] <= x <= self.focus_area[0] and -self.focus_area[1] <= y <= self.focus_area[1]
 
-    def _check_click(self, contour, rect):
+    def _check_click(self, contour, rect, area_center=None):
         """Check if the crosshair is inside the target contour with a bounding-box pre-filter."""
+        if area_center is None:
+            area_center = self.area_center
         cx, cy, cw, ch = rect
         if not (
-            cx <= self.area_center[0] - self.cfg.click_threshold and
-            self.area_center[0] + self.cfg.click_threshold <= cx + cw and
-            cy <= self.area_center[1] - self.cfg.click_threshold and
-            self.area_center[1] + self.cfg.click_threshold <= cy + ch
+            cx <= area_center[0] - self.cfg.click_threshold and
+            area_center[0] + self.cfg.click_threshold <= cx + cw and
+            cy <= area_center[1] - self.cfg.click_threshold and
+            area_center[1] + self.cfg.click_threshold <= cy + ch
         ):
             return False
 
-        points = self.click_test_points
+        points = [
+            (area_center[0], area_center[1]),
+            (area_center[0] + self.cfg.click_threshold, area_center[1]),
+            (area_center[0] - self.cfg.click_threshold, area_center[1]),
+            (area_center[0], area_center[1] + self.cfg.click_threshold),
+            (area_center[0], area_center[1] - self.cfg.click_threshold),
+        ]
         return all(cv2.pointPolygonTest(contour, pt, False) >= 0 for pt in points)
+
+    def _build_mask(self, hsv):
+        """Colour mask for this frame.
+
+        'cursor' mode uses the ported colorspec vocabulary when accents
+        are configured: one tolerance band per accent ("red; blue",
+        "r,g,b" names/triples), OR-combined - a superset of what the old
+        single hardcoded HSV range could express. Everything else keeps
+        the classic lower_color/upper_color inRange path untouched.
+        """
+        accents = getattr(self.cfg, 'accent_specs', None)
+        if self.capture_mode == 'cursor' and accents:
+            tol = float(getattr(self.cfg, 'color_tolerance', 40.0))
+            hue = hsv[:, :, 0].astype(np.int16)
+            sat = hsv[:, :, 1]
+            val = hsv[:, :, 2]
+            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+            for (ah, asat, av) in accents:
+                dh = np.abs(hue - int(ah))
+                dh = np.minimum(dh, 179 - dh)          # circular hue distance
+                band = (dh <= tol / 2.0) & \
+                       (np.abs(sat.astype(np.int16) - int(asat)) <= 80) & \
+                       (np.abs(val.astype(np.int16) - int(av)) <= 80)
+                mask[band] = 255
+            return mask
+        return cv2.inRange(hsv, self.cfg.lower_color, self.cfg.upper_color)
 
     def get_target(self, help_offset):
         help_offset = int(help_offset)
@@ -247,30 +351,75 @@ class Screen:
         self.closest_contour = None
         self.closest_rect = None
 
-        self.img = self.screenshot(self.get_region(self.area_region, help_offset))
-        hsv = cv2.cvtColor(self.img, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, self.cfg.lower_color, self.cfg.upper_color)
+        img, center, origin, edges = self._capture_frame(help_offset)
+        self.img = img
+        area_center = center
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        mask = self._build_mask(hsv)
 
         self.dilated = cv2.dilate(mask, self.dilate_kernel, iterations=5)
 
         contours, _ = cv2.findContours(self.dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+        focus_area_sq = max(self.focus_area[0] * self.focus_area[0] +
+                            self.focus_area[1] * self.focus_area[1], 1)
+        memory = self.memory.context(self.follow_seconds) if self.follow_enabled else None
+
         if len(contours) != 0:
             min_distance_sq = float('inf')
+            best_score = -1.0
             for contour in contours:
                 rect_x, rect_y, rect_w, rect_h = cv2.boundingRect(contour)
-                x = rect_x + rect_w // 2 - self.area_center[0]
-                y = int(rect_y + rect_h * (1 - self.cfg.focus_height)) - self.area_center[1]
+                x = rect_x + rect_w // 2 - area_center[0]
+                y = int(rect_y + rect_h * (1 - self.cfg.focus_height)) - area_center[1]
 
                 distance_sq = x * x + y * y
-                if distance_sq < min_distance_sq:
+
+                if self.min_target_area > 0:
+                    area = cv2.contourArea(contour)
+                    if area < self.min_target_area:
+                        continue
+                else:
+                    area = cv2.contourArea(contour)
+
+                if self.follow_enabled:
+                    # Scored selection (proximity + fill + size + memory
+                    # boost): stable lock-on instead of bare-nearest flips.
+                    score = score_blob(distance_sq, area, (rect_x, rect_y, rect_w, rect_h),
+                                       memory, focus_area_sq)
+                    take = score > best_score
+                else:
+                    take = distance_sq < min_distance_sq
+
+                if take:
+                    best_score = score if self.follow_enabled else 0.0
                     min_distance_sq = distance_sq
                     self.closest_contour = contour
                     self.closest_rect = (rect_x, rect_y, rect_w, rect_h)
+                    chosen_area = area
                     if self._is_within_focus_area(x, y):
                         self.target = (x, y)
 
-            if self.closest_contour is not None and self._check_click(self.closest_contour, self.closest_rect):
+            if self.follow_enabled and self.target is not None:
+                rx, ry, rw, rh = self.closest_rect
+                self.memory.store(rx + rw // 2, ry + int(rh * (1 - self.cfg.focus_height)),
+                                  self.closest_rect, chosen_area)
+
+            if self.motion_lead and self.target is not None and origin is not None:
+                # Kalman motion lead (ported from the app): aim where the
+                # item will be, capped so a wild track can never fling the
+                # cursor. Only meaningful with cursor-anchored capture,
+                # which knows absolute screen coordinates.
+                now = time.perf_counter()
+                abs_pt = (origin[0] + area_center[0] + self.target[0],
+                          origin[1] + area_center[1] + self.target[1])
+                self.tracker.update(now, abs_pt)
+                ox, oy = self.tracker.predict(self.motion_lead_ms, self.motion_max_lead_px)
+                self.target = (self.target[0] + ox, self.target[1] + oy)
+            elif self.motion_lead and self.target is None:
+                self.tracker.reset()
+
+            if self.closest_contour is not None and self._check_click(self.closest_contour, self.closest_rect, area_center):
                 click = True
 
         if self.cfg.debug:
@@ -331,9 +480,21 @@ class Screen:
         """Show the debug overlay composited onto a full-screen screenshot."""
         full_img = self.screenshot(self.screen_region)
 
-        offset_x = (self.screen[0] - self.area[0]) // 2
-        offset_y = (self.screen[1] - self.area[1]) // 2 - self.cfg.screen_center_offset - help_offset
-        full_img[offset_y:offset_y+debug_img.shape[0], offset_x:offset_x+debug_img.shape[1]] = debug_img
+        if self.capture_mode == 'cursor':
+            # The region is anchored on the pointer; composite at its origin.
+            try:
+                px, py = win32api.GetCursorPos()
+            except Exception:
+                px, py = self.screen_center
+            offset_x = int(px) - self.area[0] // 2
+            offset_y = int(py) - self.area[1] // 2 - help_offset
+        else:
+            offset_x = (self.screen[0] - self.area[0]) // 2
+            offset_y = (self.screen[1] - self.area[1]) // 2 - self.cfg.screen_center_offset - help_offset
+        h, w = debug_img.shape[:2]
+        if 0 <= offset_y and 0 <= offset_x and \
+                offset_y + h <= full_img.shape[0] and offset_x + w <= full_img.shape[1]:
+            full_img[offset_y:offset_y+h, offset_x:offset_x+w] = debug_img
 
         full_img = cv2.rectangle(
             full_img,

@@ -17,9 +17,14 @@ focus_height = 0.5
 
 [screen]
 group_close_target_blobs_threshold = 3, 3
-# HSV color range of the target
+# HSV color range of the target (legacy single-band mode: capture_mode = center)
 lower_color = 0, 120, 70
 upper_color = 10, 255, 255
+# Human color specs for cursor-anchored mode, ";"-separated: names
+# (red; blue), "r,g,b" triples, or "off". Used when capture_mode = cursor.
+accent_color = off
+# Color matching tolerance in hue degrees (cursor mode)
+color_tolerance = 40
 capture_area_x = 320
 capture_area_y = 320
 focus_area_x = 100
@@ -28,6 +33,9 @@ max_loops_per_sec = 60
 auto_detect_resolution = true
 resolution_x = 1920
 resolution_y = 1080
+# center = fixed square at screen center (classic behavior);
+# cursor = capture anchored on the mouse pointer, clamped to the screen
+capture_mode = center
 
 [help]
 # move | offset
@@ -44,6 +52,19 @@ click_threshold = 4
 
 [rapid_click]
 target_cps = 10
+
+[tracking]
+# Ported from the main app: target lock-on, scored blob selection and a
+# Kalman motion lead. All switches default to classic behavior.
+follow_enabled = false
+# Seconds a remembered target keeps its scoring boost
+follow_seconds = 20
+# Minimum blob area in px (filters specks/noise); 0 disables
+min_target_area = 0
+motion_lead = false
+# Predicted look-ahead in ms and hard cap on the lead offset in px
+motion_lead_ms = 40
+motion_max_lead_px = 30
 
 [key_binds]
 # Hex virtual-key codes (e.g. 01 = left mouse, 02 = right mouse, 10 = SHIFT, 52 = R)
@@ -86,6 +107,8 @@ class ConfigReader:
         self.group_close_target_blobs_threshold = (3, 3)
         self.upper_color = np.array([10, 255, 255])
         self.lower_color = np.array([0, 120, 70])
+        self.accent_specs = []           # human color specs ("red; blue")
+        self.color_tolerance = 40.0      # hue-degrees tolerance (cursor mode)
         self.capture_area_x = 320
         self.capture_area_y = 320
         self.focus_area_x = 100
@@ -94,6 +117,17 @@ class ConfigReader:
         self.auto_detect_resolution = True
         self.resolution_x = 1920
         self.resolution_y = 1080
+        # 'center' = fixed square at screen center (classic);
+        # 'cursor' = capture anchored on the mouse pointer
+        self.capture_mode = 'center'
+
+        # tracking (ported from the main app; all off by default)
+        self.follow_enabled = False
+        self.follow_seconds = 20.0
+        self.min_target_area = 0
+        self.motion_lead = False
+        self.motion_lead_ms = 40.0
+        self.motion_max_lead_px = 30.0
 
         # focus
         self.screen_center_offset = 0
@@ -186,6 +220,22 @@ class ConfigReader:
             self.upper_color = self._parse_color_array('screen', 'upper_color')
             self.lower_color = self._parse_color_array('screen', 'lower_color')
 
+            # Human color specs are optional (older config.ini files work
+            # unchanged; cursor-anchored capture falls back to the HSV band).
+            from colorspec import parse_accents
+            accent_raw = self.parser.get('screen', 'accent_color', fallback='off')
+            self.accent_specs = parse_accents(accent_raw)
+            if not self.accent_specs and accent_raw.strip().lower() not in (
+                    'off', 'none', 'disabled', 'false', ''):
+                print(f'WARNING: could not parse accent_color {accent_raw!r}, ignoring')
+
+            value = self.parser.getfloat('screen', 'color_tolerance', fallback=40.0)
+            if 1 <= value <= 179:
+                self.color_tolerance = value
+            else:
+                print('WARNING: Invalid color_tolerance value, keeping previous: '
+                      f'{self.color_tolerance}')
+
             self.capture_area_x = self.parser.getint('screen', 'capture_area_x')
             self.capture_area_y = self.parser.getint('screen', 'capture_area_y')
             self.focus_area_x = self.parser.getint('screen', 'focus_area_x')
@@ -200,6 +250,22 @@ class ConfigReader:
 
             self.resolution_x = self.parser.getint('screen', 'resolution_x')
             self.resolution_y = self.parser.getint('screen', 'resolution_y')
+
+            value = self.parser.get('screen', 'capture_mode', fallback='center').strip().lower()
+            capture_mode_list = ['center', 'cursor']
+            if value in capture_mode_list:
+                self.capture_mode = value
+            else:
+                print('WARNING: Invalid capture_mode value, keeping previous: '
+                      f'{self.capture_mode}')
+
+            # Get tracking settings (all optional, classic behavior by default)
+            self.follow_enabled = self.parser.getboolean('tracking', 'follow_enabled', fallback=False)
+            self.follow_seconds = self.parser.getfloat('tracking', 'follow_seconds', fallback=20.0)
+            self.min_target_area = self.parser.getint('tracking', 'min_target_area', fallback=0)
+            self.motion_lead = self.parser.getboolean('tracking', 'motion_lead', fallback=False)
+            self.motion_lead_ms = self.parser.getfloat('tracking', 'motion_lead_ms', fallback=40.0)
+            self.motion_max_lead_px = self.parser.getfloat('tracking', 'motion_max_lead_px', fallback=30.0)
 
             # Get help settings
             value = self.parser.get('help', 'mode').lower()
