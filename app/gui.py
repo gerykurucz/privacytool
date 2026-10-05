@@ -497,11 +497,14 @@ META = {
                        "clicks on one control.", "bool", None),
     "watch_center_only": ("Watch the screen centre only",
                           "For fixed layouts where the items never "
-                          "move: assistance always looks at the middle "
-                          "of the screen instead of following your "
-                          "cursor. Clicks far outside that area pass "
-                          "through untouched, like empty space. Off "
-                          "(default): the usual cursor-anchored search.",
+                          "move: assistance ignores where your cursor "
+                          "is and always looks inside a square at the "
+                          "middle of the screen - as wide as your "
+                          "\"search distance\" setting (150 px by "
+                          "default). Clicks outside that square pass "
+                          "through completely untouched, like empty "
+                          "space. Off (default): the usual cursor-"
+                          "anchored search.",
                           "bool", None),
     "follow_learn": ("What the memory may learn",
                      "Only items in my colour: a misclick that snapped "
