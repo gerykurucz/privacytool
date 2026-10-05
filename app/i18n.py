@@ -386,9 +386,7 @@ STRINGS = {
             "lebenden Antwort davon.\nErneut versuchen?",
         "err.start_fail": "Snappy AI konnte nicht starten.\nMit "
             "--console ausführen, um Details zu sehen.",
-        "gate.btn.activate": "Ich habe gezahlt - jetzt freischalten",
         "gate.btn.monthly": "Monats-Abo für 9,99€",
-        "gate.btn.recheck": "Jetzt erneut prüfen",
         "gate.btn.trial": "Testkauf für 1,99€",
         "gate.head.canceled": "Dieses Abo wurde gekündigt - starten "
             "Sie auf Stripe ein neues, um weiterzumachen.",
@@ -419,15 +417,8 @@ STRINGS = {
             "Abos treiben die Preise; bitte nicht.",
         "gate.msg.active": "Abo aktiv - Snappy AI startet...",
         "gate.msg.checking": "Prüfe mit dem Server...",
-        "gate.msg.dispatching": "Bitte den Publisher, jetzt zu "
-            "laufen...",
-        "gate.msg.no_dispatch": "Dispatch nicht konfiguriert - die "
-            "Freischaltung folgt dem Publisher-Takt (wenige "
-            "Minuten). Dieses Fenster prüft von selbst weiter.",
         "gate.msg.no_link": "Dieser Zahlungs-Link ist in diesem "
             "Build nicht konfiguriert.",
-        "gate.msg.not_live": "Noch nicht aktiv - dieses Fenster "
-            "prüft alle 30 Sekunden von selbst weiter.",
         "gate.msg.open_fail": "Kein Browser startbar. Diesen Link "
             "von Hand öffnen:\n%s",
         "gate.msg.open_ok": "Stripe ist im Browser offen - dort "
@@ -1178,9 +1169,7 @@ STRINGS = {
         "err.start_fail": "A Snappy AI nem tudott "
             "elindulni.\nFuttassa --console kapcsolóval a "
             "részletekért.",
-        "gate.btn.activate": "Fizettem - aktiválás most",
         "gate.btn.monthly": "Havi előfizetés 9,99€-ért",
-        "gate.btn.recheck": "Ellenőrzés most",
         "gate.btn.trial": "Próbavásárlás 1,99€-ért",
         "gate.head.canceled": "Ez az előfizetés le lett mondva - "
             "indítson újat a Stripe-on a folytatáshoz.",
@@ -1212,15 +1201,8 @@ STRINGS = {
         "gate.msg.active": "Az előfizetés aktív - a Snappy AI "
             "indul...",
         "gate.msg.checking": "Ellenőrzés a szerverrel...",
-        "gate.msg.dispatching": "Kérés a kiadónak, hogy most "
-            "fusson...",
-        "gate.msg.no_dispatch": "A dispatch nincs beállítva - az "
-            "aktiválás a kiadó ütemezését követi (pár perc). Ez az "
-            "ablak maga is ellenőriz tovább.",
         "gate.msg.no_link": "Ez a fizetési link nincs beállítva ezen "
             "a builden.",
-        "gate.msg.not_live": "Még nem aktív - ez az ablak 30 "
-            "másodpercenként maga ellenőriz tovább.",
         "gate.msg.open_fail": "Nem indult böngésző. Nyissa meg ezt a "
             "linket kézzel:\n%s",
         "gate.msg.open_ok": "A Stripe nyitva van a böngészőben - ott "
@@ -1972,9 +1954,7 @@ STRINGS = {
             "funciona con una respuesta viva de él.\n¿Reintentar?",
         "err.start_fail": "Snappy AI no pudo arrancar.\nEjecute con "
             "--console para ver los detalles.",
-        "gate.btn.activate": "Ya pagué - activar ahora",
         "gate.btn.monthly": "Suscripción mensual por 9,99€",
-        "gate.btn.recheck": "Comprobar ahora",
         "gate.btn.trial": "Compra de prueba por 1,99€",
         "gate.head.canceled": "Esta suscripción se canceló - cree "
             "una nueva en Stripe para continuar.",
@@ -2005,15 +1985,8 @@ STRINGS = {
         "gate.msg.active": "Suscripción activa - arrancando Snappy "
             "AI...",
         "gate.msg.checking": "Comprobando con el servidor...",
-        "gate.msg.dispatching": "Pidiendo al publicador que ejecute "
-            "ahora...",
-        "gate.msg.no_dispatch": "Dispatch no configurado - la "
-            "activación sigue el ciclo del publicador (unos "
-            "minutos). Esta ventana sigue comprobándose sola.",
         "gate.msg.no_link": "Ese enlace de pago no está configurado "
             "en esta compilación.",
-        "gate.msg.not_live": "Aún no activo - esta ventana sigue "
-            "comprobándose sola cada 30 segundos.",
         "gate.msg.open_fail": "No se pudo abrir un navegador. Abra "
             "este enlace a mano:\n%s",
         "gate.msg.open_ok": "Stripe abierto en su navegador - pague "
@@ -2779,9 +2752,7 @@ STRINGS = {
             "celui-ci.\nRéessayer ?",
         "err.start_fail": "Snappy AI n'a pas pu démarrer.\nLancez "
             "avec --console pour voir les détails.",
-        "gate.btn.activate": "J'ai payé - activer maintenant",
         "gate.btn.monthly": "Abonnement mensuel à 9,99€",
-        "gate.btn.recheck": "Vérifier maintenant",
         "gate.btn.trial": "Achat d'essai à 1,99€",
         "gate.head.canceled": "Cet abonnement a été annulé - "
             "commencez-en un nouveau sur Stripe pour continuer.",
@@ -2814,15 +2785,8 @@ STRINGS = {
         "gate.msg.active": "Abonnement actif - démarrage de Snappy "
             "AI...",
         "gate.msg.checking": "Vérification auprès du serveur...",
-        "gate.msg.dispatching": "Demande à l'éditeur de s'exécuter "
-            "maintenant...",
-        "gate.msg.no_dispatch": "Dispatch non configuré - "
-            "l'activation suit le cycle de l'éditeur (quelques "
-            "minutes). Cette fenêtre continue de se revérifier.",
         "gate.msg.no_link": "Ce lien de paiement n'est pas configuré "
             "sur cette version.",
-        "gate.msg.not_live": "Pas encore actif - cette fenêtre "
-            "continue de se revérifier toutes les 30 secondes.",
         "gate.msg.open_fail": "Impossible d'ouvrir un navigateur. "
             "Ouvrez ce lien à la main :\n%s",
         "gate.msg.open_ok": "Stripe est ouvert dans votre navigateur "
@@ -3584,9 +3548,7 @@ STRINGS = {
             "odpowiedzią z niego.\nPonowić?",
         "err.start_fail": "Snappy AI nie mógł wystartować.\nUruchom "
             "z --console, aby zobaczyć szczegóły.",
-        "gate.btn.activate": "Zapłaciłem - aktywuj teraz",
         "gate.btn.monthly": "Subskrypcja miesięczna za 9,99€",
-        "gate.btn.recheck": "Sprawdź ponownie",
         "gate.btn.trial": "Zakup testowy za 1,99€",
         "gate.head.canceled": "Ta subskrypcja została anulowana - "
             "załóż nową na Stripe, by kontynuować.",
@@ -3616,15 +3578,8 @@ STRINGS = {
         "gate.msg.active": "Subskrypcja aktywna - Snappy AI "
             "startuje...",
         "gate.msg.checking": "Sprawdzanie z serwerem...",
-        "gate.msg.dispatching": "Prośba do wydawcy o uruchomienie "
-            "teraz...",
-        "gate.msg.no_dispatch": "Dispatch nieskonfigurowany - "
-            "aktywacja podąża za cyklem wydawcy (kilka minut). To "
-            "okno sprawdza dalej samo.",
         "gate.msg.no_link": "Ten link płatności nie jest "
             "skonfigurowany w tej wersji.",
-        "gate.msg.not_live": "Jeszcze nieaktywne - to okno sprawdza "
-            "dalej co 30 sekund.",
         "gate.msg.open_fail": "Nie udało się otworzyć przeglądarki. "
             "Otwórz ten link ręcznie:\n%s",
         "gate.msg.open_ok": "Stripe otwarty w przeglądarce - zapłać "
@@ -4355,9 +4310,7 @@ STRINGS = {
             "ответом от него.\nПовторить?",
         "err.start_fail": "Snappy AI не смог запуститься.\nЗапустите "
             "с --console, чтобы увидеть детали.",
-        "gate.btn.activate": "Я оплатил - активировать сейчас",
         "gate.btn.monthly": "Подписка на месяц за 9,99€",
-        "gate.btn.recheck": "Проверить сейчас",
         "gate.btn.trial": "Пробная покупка за 1,99€",
         "gate.head.canceled": "Эта подписка отменена - заведите "
             "новую на Stripe, чтобы продолжить.",
@@ -4387,15 +4340,8 @@ STRINGS = {
         "gate.msg.active": "Подписка активна - Snappy AI "
             "запускается...",
         "gate.msg.checking": "Проверяем у сервера...",
-        "gate.msg.dispatching": "Просим издателя запуститься "
-            "сейчас...",
-        "gate.msg.no_dispatch": "Dispatch не настроен - активация "
-            "идёт по расписанию издателя (несколько минут). Это окно "
-            "продолжает проверять само.",
         "gate.msg.no_link": "Эта платёжная ссылка не настроена в "
             "этой сборке.",
-        "gate.msg.not_live": "Ещё не активно - это окно продолжает "
-            "проверять само каждые 30 секунд.",
         "gate.msg.open_fail": "Не удалось открыть браузер. Откройте "
             "эту ссылку вручную:\n%s",
         "gate.msg.open_ok": "Stripe открыт в браузере - оплатите "
@@ -4983,9 +4929,7 @@ STRINGS = {
         "err.auth_unreachable": "Snappy AI 认证服务器无法连接：\n%s\n\nSnappy "
             "AI 只在得到它的实时应答时运行。\n重试？",
         "err.start_fail": "Snappy AI 无法启动。\n请用 --console 运行以查看详情。",
-        "gate.btn.activate": "我已付款——立即激活",
         "gate.btn.monthly": "月度订阅 9.99€",
-        "gate.btn.recheck": "立即重新检查",
         "gate.btn.trial": "试用购买 1.99€",
         "gate.head.canceled": "此订阅已取消——请在 Stripe 新建一个以继续。",
         "gate.head.canceling": "您的订阅将取消——在 %s "
@@ -5002,11 +4946,7 @@ STRINGS = {
             "帐户在两地运行期间本软件保持关闭——请关闭另一个会话后重新检查。共享订阅会抬高价格；请勿如此。",
         "gate.msg.active": "订阅有效——正在启动 Snappy AI…",
         "gate.msg.checking": "正在向服务器检查…",
-        "gate.msg.dispatching": "正在请求发布方立即运行…",
-        "gate.msg.no_dispatch": "未配置 "
-            "Dispatch——激活遵循发布方的周期（几分钟）。本窗口会继续自动复查。",
         "gate.msg.no_link": "此版本未配置该付款链接。",
-        "gate.msg.not_live": "尚未生效——本窗口每 30 秒继续自动复查。",
         "gate.msg.open_fail": "无法打开浏览器。请手动打开此链接：\n%s",
         "gate.msg.open_ok": "Stripe "
             "已在浏览器打开——在那里付款，然后按“立即重新检查”（或“我已付款”）。",
@@ -5405,9 +5345,7 @@ STRINGS = {
             "はそこからの応答があって初めて動作します。\n再試行しますか？",
         "err.start_fail": "Snappy AI を起動できませんでした。\n詳細は --console "
             "で実行してください。",
-        "gate.btn.activate": "支払いました - 今すぐ有効化",
         "gate.btn.monthly": "月額サブスクリプション 9.99€",
-        "gate.btn.recheck": "今すぐ再確認",
         "gate.btn.trial": "トライアル購入 1.99€",
         "gate.head.canceled": "このサブスクリプションは取消済み——続行には Stripe で新規作成を。",
         "gate.head.canceling": "サブスクリプションはキャンセル予定——%s "
@@ -5427,11 +5365,7 @@ STRINGS = {
             "アカウントが2箇所で動く間、本ソフトはオフ——他のセッションを閉じて再確認を。共有は価格を上げます。ご遠慮を。",
         "gate.msg.active": "サブスクリプション有効——Snappy AI を起動…",
         "gate.msg.checking": "サーバーに確認中…",
-        "gate.msg.dispatching": "発行元に今すぐ実行を依頼中…",
-        "gate.msg.no_dispatch": "dispatch "
-            "未設定——有効化は発行元の周期（数分）に従います。この窓は自動再確認を続けます。",
         "gate.msg.no_link": "この支払いリンクはこのビルドで未設定です。",
-        "gate.msg.not_live": "まだ有効化されていません——この窓は30秒ごとに自動再確認を継続。",
         "gate.msg.open_fail": "ブラウザを開けませんでした。手で開いてください:\n%s",
         "gate.msg.open_ok": "Stripe "
             "をブラウザで開きました——そこで支払い、「今すぐ再確認」（または「支払いました」）を。",
@@ -5879,9 +5813,7 @@ STRINGS = {
             "없습니다:\n%s\n\nSnappy AI는 해당 서버의 응답이 있어야만 작동합니다.\n다시 시도?",
         "err.start_fail": "Snappy AI를 시작할 수 없습니다.\n자세한 내용은 "
             "--console로 실행하세요.",
-        "gate.btn.activate": "결제했습니다 - 지금 활성화",
         "gate.btn.monthly": "월 구독 9.99€",
-        "gate.btn.recheck": "지금 재확인",
         "gate.btn.trial": "체험 구매 1.99€",
         "gate.head.canceled": "이 구독은 취소됨 - 계속하려면 Stripe에서 새로 시작.",
         "gate.head.canceling": "구독이 취소 예정 - %s까지 유효, 이후 갱신하지 않으면 이 "
@@ -5900,11 +5832,7 @@ STRINGS = {
             "재확인하세요. 구독 공유는 가격을 올립니다.",
         "gate.msg.active": "구독 활성 - Snappy AI 시작...",
         "gate.msg.checking": "서버에 확인 중...",
-        "gate.msg.dispatching": "발행자에게 지금 실행 요청 중...",
-        "gate.msg.no_dispatch": "Dispatch 미설정 - 활성화는 발행자 주기(몇 분)를 "
-            "따름. 이 창은 계속 자동 재확인.",
         "gate.msg.no_link": "이 결제 링크는 이 빌드에서 설정되지 않았습니다.",
-        "gate.msg.not_live": "아직 활성화 전 - 이 창은 30초마다 자동 재확인을 계속.",
         "gate.msg.open_fail": "브라우저를 열 수 없습니다. 이 링크를 수동으로 여세요:\n%s",
         "gate.msg.open_ok": "Stripe를 브라우저에서 열었습니다 - 거기서 결제 후 ‘지금 "
             "재확인’(또는 ‘결제했습니다’).",
@@ -6493,9 +6421,7 @@ STRINGS = {
             "funziona solo con una risposta viva da esso.\nRiprova?",
         "err.start_fail": "Snappy AI non è riuscito ad "
             "avviarsi.\nEsegui con --console per i dettagli.",
-        "gate.btn.activate": "Ho pagato - attiva ora",
         "gate.btn.monthly": "Abbonamento mensile a 9,99€",
-        "gate.btn.recheck": "Ricontrolla ora",
         "gate.btn.trial": "Acquisto di prova a 1,99€",
         "gate.head.canceled": "Questo abbonamento è stato annullato "
             "- avviane uno nuovo su Stripe per continuare.",
@@ -6526,15 +6452,8 @@ STRINGS = {
         "gate.msg.active": "Abbonamento attivo - avvio di Snappy "
             "AI...",
         "gate.msg.checking": "Controllo col server...",
-        "gate.msg.dispatching": "Chiedo all'editore di eseguire "
-            "adesso...",
-        "gate.msg.no_dispatch": "Dispatch non configurato - "
-            "l'attivazione segue il ciclo dell'editore (pochi "
-            "minuti). Questa finestra continua a ricontrollarsi.",
         "gate.msg.no_link": "Quel collegamento di pagamento non è "
             "configurato in questa build.",
-        "gate.msg.not_live": "Non ancora attivo - questa finestra "
-            "continua a ricontrollarsi ogni 30 secondi.",
         "gate.msg.open_fail": "Impossibile aprire un browser. Apri "
             "questo collegamento a mano:\n%s",
         "gate.msg.open_ok": "Stripe è aperto nel browser - paga lì, "
@@ -7289,9 +7208,7 @@ STRINGS = {
             "funciona com uma resposta viva dele.\nTentar de novo?",
         "err.start_fail": "O Snappy AI não conseguiu "
             "arrancar.\nExecute com --console para ver os detalhes.",
-        "gate.btn.activate": "Já paguei - ativar agora",
         "gate.btn.monthly": "Subscrição mensal por 9,99€",
-        "gate.btn.recheck": "Verificar agora",
         "gate.btn.trial": "Compra de teste por 1,99€",
         "gate.head.canceled": "Esta subscrição foi cancelada - "
             "comece uma nova no Stripe para continuar.",
@@ -7322,15 +7239,8 @@ STRINGS = {
         "gate.msg.active": "Subscrição ativa - a arrancar o Snappy "
             "AI...",
         "gate.msg.checking": "A verificar com o servidor...",
-        "gate.msg.dispatching": "A pedir ao editor para executar "
-            "agora...",
-        "gate.msg.no_dispatch": "Dispatch não configurado - a "
-            "ativação segue o ciclo do editor (uns minutos). Esta "
-            "janela continua a verificar-se.",
         "gate.msg.no_link": "Essa ligação de pagamento não está "
             "configurada nesta compilação.",
-        "gate.msg.not_live": "Ainda não ativo - esta janela continua "
-            "a verificar-se a cada 30 segundos.",
         "gate.msg.open_fail": "Não foi possível abrir um navegador. "
             "Abra esta ligação à mão:\n%s",
         "gate.msg.open_ok": "O Stripe está aberto no navegador - "
@@ -8067,9 +7977,7 @@ STRINGS = {
             "levend antwoord ervan.\nOpnieuw proberen?",
         "err.start_fail": "Snappy AI kon niet starten.\nStart met "
             "--console voor details.",
-        "gate.btn.activate": "Ik heb betaald - nu activeren",
         "gate.btn.monthly": "Maandabonnement voor 9,99€",
-        "gate.btn.recheck": "Nu opnieuw controleren",
         "gate.btn.trial": "Proefkoop voor 1,99€",
         "gate.head.canceled": "Dit abonnement is opgezegd - begin "
             "een nieuw op Stripe om door te gaan.",
@@ -8101,14 +8009,8 @@ STRINGS = {
             "jaagt de prijs op; doe het alstublieft niet.",
         "gate.msg.active": "Abonnement actief - Snappy AI start...",
         "gate.msg.checking": "Controleren bij de server...",
-        "gate.msg.dispatching": "Vraag de uitgever nu te draaien...",
-        "gate.msg.no_dispatch": "Dispatch niet geconfigureerd - "
-            "activatie volgt de cyclus van de uitgever (enkele "
-            "minuten). Dit venster blijft zich controleren.",
         "gate.msg.no_link": "Die betaallink is in deze build niet "
             "geconfigureerd.",
-        "gate.msg.not_live": "Nog niet actief - dit venster blijft "
-            "zich elke 30 seconden controleren.",
         "gate.msg.open_fail": "Kon geen browser openen. Open deze "
             "link met de hand:\n%s",
         "gate.msg.open_ok": "Stripe staat open in uw browser - "
@@ -8843,9 +8745,7 @@ STRINGS = {
             "ondan canlı bir yanıtla çalışır.\nYeniden dene?",
         "err.start_fail": "Snappy AI başlatılamadı.\nAyrıntılar için "
             "--console ile çalıştırın.",
-        "gate.btn.activate": "Ödedim - şimdi etkinleştir",
         "gate.btn.monthly": "9,99€ karşılığı aylık abonelik",
-        "gate.btn.recheck": "Şimdi yeniden denetle",
         "gate.btn.trial": "1,99€ karşılığı deneme satın alımı",
         "gate.head.canceled": "Bu abonelik iptal edildi - devam "
             "etmek için Stripe'ta yenisini başlatın.",
@@ -8876,15 +8776,8 @@ STRINGS = {
         "gate.msg.active": "Abonelik etkin - Snappy AI "
             "başlatılıyor...",
         "gate.msg.checking": "Sunucuya denetleniyor...",
-        "gate.msg.dispatching": "Yayıncıdan şimdi çalışması "
-            "isteniyor...",
-        "gate.msg.no_dispatch": "Dispatch yapılandırılmamış - "
-            "etkinleştirme yayıncı döngüsünü izler (birkaç dakika). "
-            "Bu pencere kendini denetlemeye devam eder.",
         "gate.msg.no_link": "Bu ödeme bağlantısı bu derlemede "
             "yapılandırılmamış.",
-        "gate.msg.not_live": "Henüz etkin değil - bu pencere 30 "
-            "saniyede bir kendini denetlemeye devam ediyor.",
         "gate.msg.open_fail": "Tarayıcı açılamadı. Bu bağlantıyı "
             "elle açın:\n%s",
         "gate.msg.open_ok": "Stripe tarayıcınızda açık - orada "
@@ -9610,9 +9503,7 @@ STRINGS = {
             "відповіддю від нього.\nПовторити?",
         "err.start_fail": "Snappy AI не зміг запуститися.\nЗапустіть "
             "з --console, щоб побачити деталі.",
-        "gate.btn.activate": "Я сплатив - активувати зараз",
         "gate.btn.monthly": "Місячна підписка за 9,99€",
-        "gate.btn.recheck": "Перевірити зараз",
         "gate.btn.trial": "Пробна покупка за 1,99€",
         "gate.head.canceled": "Цю підписку скасовано - створіть нову "
             "на Stripe, щоб продовжити.",
@@ -9641,15 +9532,8 @@ STRINGS = {
         "gate.msg.active": "Підписка активна - Snappy AI "
             "запускається...",
         "gate.msg.checking": "Перевіряємо у сервера...",
-        "gate.msg.dispatching": "Просимо видавця запуститися "
-            "зараз...",
-        "gate.msg.no_dispatch": "Dispatch не налаштовано - активація "
-            "йде за циклом видавця (кілька хвилин). Це вікно далі "
-            "перевіряється саме.",
         "gate.msg.no_link": "Це платіжне посилання не налаштовано в "
             "цій збірці.",
-        "gate.msg.not_live": "Ще не активно - це вікно далі "
-            "перевіряється саме кожні 30 секунд.",
         "gate.msg.open_fail": "Не вдалося відкрити браузер. "
             "Відкрийте це посилання вручну:\n%s",
         "gate.msg.open_ok": "Stripe відкрито у браузері - сплатіть "
@@ -10386,9 +10270,7 @@ STRINGS = {
             "hai kutoka kwake.\nJaribu tena?",
         "err.start_fail": "Snappy AI imeshindwa kuanza.\nEndesha na "
             "--console kuona maelezo.",
-        "gate.btn.activate": "Nimelipa - washa sasa",
         "gate.btn.monthly": "Usajili wa kila mwezi kwa 9,99€",
-        "gate.btn.recheck": "Kagua sasa",
         "gate.btn.trial": "Ununuzi wa majaribio kwa 1,99€",
         "gate.head.canceled": "Usajili huu umefutwa - anzisha mpya "
             "kwenye Stripe kuendelea.",
@@ -10418,15 +10300,8 @@ STRINGS = {
             "usajili huinua bei; tafadhali usifanye.",
         "gate.msg.active": "Usajili hai - Snappy AI inaanza...",
         "gate.msg.checking": "Inakagua kwa seva...",
-        "gate.msg.dispatching": "Inamuomba mchapishaji afanye kazi "
-            "sasa...",
-        "gate.msg.no_dispatch": "Dispatch haijasanidiwa - uwashaji "
-            "hufuata mzunguko wa mchapishaji (dakika chache). "
-            "Dirisha hili linaendelea kujikagua.",
         "gate.msg.no_link": "Kiungo hicho cha malipo hakijasanidiwa "
             "kwenye jengo hili.",
-        "gate.msg.not_live": "Bado si hai - dirisha hili linaendelea "
-            "kujikagua kila sekunde 30.",
         "gate.msg.open_fail": "Imeshindwa kufungua kivinjari. Fungua "
             "kiungo hiki kwa mkono:\n%s",
         "gate.msg.open_ok": "Stripe imefunguliwa kwenye kivinjari - "

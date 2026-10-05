@@ -206,6 +206,16 @@ class App(object):
         self.follow_lock = None           # {"active", "accent", "source", "misses"}
         self._follow_stable = 0           # consecutive no-move scans (backoff)
 
+        # centre-watch follow subsystem ("Keep the cursor on it"): while
+        # the switch is on and an item was picked in the watched square,
+        # this dict holds {"x", "y", "sig", "when", "misses", "stable"}.
+        # It lives apart from follow_lock: that one drags the user's
+        # cursor around during a hold - this one only parks the cursor
+        # on the moving item when the user is not touching the buttons.
+        self._center_follow = None
+        self._pick_at = None              # candidate seen once (arming)
+        self._pick_at_time = 0.0
+
         # own process id: clicks inside our own windows/dialogs are
         # never assisted (see _fg_is_own)
         self._own_pid = os.getpid()
@@ -443,6 +453,27 @@ class App(object):
                                 now, (ax, ay, math.sqrt(area)))
                     except Exception:
                         pass
+                # "Keep the cursor on it": any scan that found an item
+                # inside the watched square arms/refreshes the centre
+                # follow - both the click workers and the follow worker
+                # itself call scan_near, so a moving plane keeps the
+                # lock alive without needing another click. The gate
+                # lives in run_follow_worker (switch, buttons, pick
+                # radius), so arming here stays cheap and safe.
+                if bool(self.cfg.get("center_follow", False)):
+                    prev = self._center_follow
+                    if (prev is not None
+                            and math.hypot(ax - prev["x"],
+                                           ay - prev["y"]) > 3.0):
+                        # the item actually moved between scans: this
+                        # is a live tracking cycle, drop the backoff
+                        self._follow_stable = 0
+                    self._center_follow = {
+                        "x": ax, "y": ay,
+                        "sig": res.target.sig,
+                        "when": time.perf_counter(),
+                        "misses": 0,
+                    }
                 return res.target
             return None
 
@@ -1698,10 +1729,129 @@ class App(object):
         except Exception:
             return None
 
+    def _center_follow_cycle(self):
+        """One pass of "Keep the cursor on it" (centre-watch follow).
+
+        Only ever runs while BOTH switches are on: "Watch the screen
+        centre only" and this one - exactly as requested, the feature
+        exists to keep the cursor glued to a picked target inside the
+        watched square (a moving scroll plane keeps being tracked even
+        after it slides across the box).
+
+        Safety rules, in order:
+          * never fights the user: while any mouse button is held, or a
+            hold/mouse2 follow-lock owns the cursor, this stays out;
+          * arms on a click that snapped to an item inside the box, or
+            when the user parks their cursor on an item there for ~0.3 s
+            (the pick); dies after ~0.5 s without a fresh sighting;
+          * the cursor rides the Kalman motion lead when the leading
+            switches are on, so fast planes are chased, not lagged.
+        """
+        if not bool(self.cfg.get("watch_center_only", False)):
+            return False
+        if bool(self.cfg.get("motion_predict", False)) \
+                or bool(self.cfg.get("motion_3d", False)):
+            # the lead history must be fed even between clicks, or the
+            # tracker goes stale mid-chase and the cursor lags behind
+            self._feed_motion_track()
+        cf = self._center_follow
+        now = time.perf_counter()
+
+        if cf is None or (now - cf["when"]) > 1.0:
+            if cf is not None:
+                # the chase went blind for a whole second: let go, and
+                # require a fresh dwell before locking onto anything
+                self._center_follow = None
+            # nothing armed (or the sighting went stale): try to pick
+            # from where the cursor currently sits inside the box
+            vx, vy, vw, vh = self._virtual_screen()
+            mx = vx + vw // 2
+            my = vy + vh // 2
+            half = max(24, int(round(
+                float(self.cfg.get("radius", 150)) * self.dpi_scale))) // 2
+            x, y = get_cursor_pos()
+            if abs(x - mx) > half or abs(y - my) > half:
+                return False
+            before = self._center_follow
+            target = self.scan_near(x, y, None, None)
+            if target is not None:
+                ax, ay = x + target.dx, y + target.dy
+                # did the SCAN arm a sighting of its own (a click
+                # worker's snap refreshed it a moment ago)? then the
+                # chase starts instantly - no dwell required.
+                armed_by_scan = (self._center_follow is not None
+                                 and (before is None
+                                      or (now - before["when"]) > 0.9))
+                if armed_by_scan:
+                    log("Centre follow: keeping the cursor on the "
+                        "clicked item.")
+                    self._pick_at = None
+                elif (self._pick_at is not None
+                        and math.hypot(ax - self._pick_at[0],
+                                       ay - self._pick_at[1]) <= 6.0
+                        and now - self._pick_at_time >= 0.25):
+                    # the same item seen on two scans ~0.3 s apart:
+                    # the user parked the cursor on it - arm the chase
+                    self._center_follow = {
+                        "x": ax, "y": ay, "sig": target.sig,
+                        "when": now, "misses": 0,
+                    }
+                    self._pick_at = None
+                    log("Centre follow: keeping the cursor on the "
+                        "picked item.")
+                else:
+                    self._pick_at = (ax, ay)
+                    self._pick_at_time = now
+            else:
+                self._pick_at = None
+            return True
+
+        self._pick_at = None
+
+        # never fight the user's own input
+        if self._lbtn_down or self._rbtn_down:
+            return True
+        lock = self.follow_lock
+        if lock and lock.get("active"):
+            return True
+
+        cx, cy = cf["x"], cf["y"]
+        nx, ny = self._apply_motion_lead(cx, cy)
+        px, py = get_cursor_pos()
+        if math.hypot(nx - px, ny - py) > 2.0:
+            user32.SetCursorPos(int(nx), int(ny))
+            self._follow_stable = 0
+        else:
+            self._follow_stable += 1
+        return True
+
+    def _feed_motion_track(self):
+        """Refresh the Kalman/linear track with the freshest centre
+        sighting so the motion lead stays alive during a chase."""
+        cf = self._center_follow
+        if cf is None:
+            return
+        now = time.perf_counter()
+        self._track.append((now, cf["x"], cf["y"]))
+        while self._track and now - self._track[0][0] > 0.6:
+            self._track.popleft()
+        try:
+            sig = cf.get("sig")
+            area = float(getattr(sig, "area", 0) or 0) if sig else 0.0
+            if area > 0.0:
+                self._tracker.update(now, (cf["x"], cf["y"],
+                                           math.sqrt(area)))
+        except Exception:
+            pass
+
     def run_follow_worker(self):
         """
         While a follow-lock is active, keep the cursor on the locked
         colour's nearest item (stabilises drags, e.g. scrollbar thumbs).
+
+        Also drives "Keep the cursor on it": with the centre watch on,
+        park the cursor on the picked item inside the watched square
+        and chase it while it moves (scroll planes and similar).
         """
         while not self.stop.is_set():
             if not self.running \
@@ -1710,7 +1860,15 @@ class App(object):
                 continue
 
             lock = self.follow_lock
+            center_on = (bool(self.cfg.get("center_follow", False))
+                         and bool(self.cfg.get("watch_center_only", False)))
+            if not center_on:
+                self._center_follow = None
+                self._pick_at = None
             if not lock or not lock.get("active"):
+                if center_on and self._center_follow_cycle():
+                    time.sleep(0.08 if self._follow_stable >= 4 else 0.04)
+                    continue
                 time.sleep(0.05)
                 continue
 

@@ -175,6 +175,16 @@ DEFAULT_CONFIG = {
     # behaviour, bit-for-bit.
     "watch_center_only": False,
 
+    # "Keep the cursor on it" (centre-watch follow). Only ever acts while
+    # watch_center_only is ON: after an item inside the watched square
+    # was picked (a click that snapped to it, or resting the cursor on
+    # it for ~0.3 s), the cursor stays parked on that item and chases it
+    # while it moves - scroll planes, animated panels, moving targets.
+    # It never fights the user: any held button or active follow-lock
+    # pauses it, and it dies ~1 s after the item stops being sighted.
+    # Combine with "Lead moving items" for smooth fast chasing.
+    "center_follow": False,
+
     # 3D snap follower: track position AND scale with a Kalman filter
     # instead of the legacy linear fit. Outliers are rejected per scan
     # (one bad frame damps the step instead of blinding the track),
