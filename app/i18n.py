@@ -421,9 +421,7 @@ STRINGS = {
             "Build nicht konfiguriert.",
         "gate.msg.open_fail": "Kein Browser startbar. Diesen Link "
             "von Hand öffnen:\n%s",
-        "gate.msg.open_ok": "Stripe ist im Browser offen - dort "
-            "zahlen, dann 'Jetzt erneut prüfen' (oder 'Ich habe "
-            "gezahlt').",
+        "gate.msg.open_ok": "Stripe ist im Browser geöffnet - zahlen Sie dort. Dieses Fenster bemerkt die Zahlung von selbst und startet die Engine.",
         "gate.msg.session_gone": "Sitzung weg - bitte erneut "
             "anmelden.",
         "gate.msg.still_none": "Weiterhin kein aktives Abo für diese "
@@ -1205,9 +1203,7 @@ STRINGS = {
             "a builden.",
         "gate.msg.open_fail": "Nem indult böngésző. Nyissa meg ezt a "
             "linket kézzel:\n%s",
-        "gate.msg.open_ok": "A Stripe nyitva van a böngészőben - ott "
-            "fizessen, majd nyomja meg az 'Ellenőrzés most' (vagy "
-            "'Fizettem') gombot.",
+        "gate.msg.open_ok": "A Stripe megnyílt a böngészöben - fizessen ott. Ez az ablak magártál felfigyel a fizetésre, és elindítja a motort.",
         "gate.msg.session_gone": "A munkamenet eltűnt - jelentkezzen "
             "be újra.",
         "gate.msg.still_none": "Ennél a bejelentkezésnél továbbra "
@@ -1989,8 +1985,7 @@ STRINGS = {
             "en esta compilación.",
         "gate.msg.open_fail": "No se pudo abrir un navegador. Abra "
             "este enlace a mano:\n%s",
-        "gate.msg.open_ok": "Stripe abierto en su navegador - pague "
-            "ahí y pulse «Comprobar ahora» (o «Ya pagué»).",
+        "gate.msg.open_ok": "Stripe está abierto en su navegador: pague allí. Esta ventana detecta el pago por sí sola e inicia el motor.",
         "gate.msg.session_gone": "La sesión se perdió - entre de "
             "nuevo.",
         "gate.msg.still_none": "Sigue sin suscripción activa para "
@@ -2789,9 +2784,7 @@ STRINGS = {
             "sur cette version.",
         "gate.msg.open_fail": "Impossible d'ouvrir un navigateur. "
             "Ouvrez ce lien à la main :\n%s",
-        "gate.msg.open_ok": "Stripe est ouvert dans votre navigateur "
-            "- payez-y, puis pressez « Vérifier maintenant » (ou « "
-            "J'ai payé »).",
+        "gate.msg.open_ok": "Stripe est ouvert dans votre navigateur - payez-y. Cette fenêtre remarque le paiement toute seule et démarre le moteur.",
         "gate.msg.session_gone": "Session perdue - reconnectez-vous.",
         "gate.msg.still_none": "Toujours aucun abonnement actif pour "
             "cette connexion.",
@@ -3582,8 +3575,7 @@ STRINGS = {
             "skonfigurowany w tej wersji.",
         "gate.msg.open_fail": "Nie udało się otworzyć przeglądarki. "
             "Otwórz ten link ręcznie:\n%s",
-        "gate.msg.open_ok": "Stripe otwarty w przeglądarce - zapłać "
-            "tam, potem 'Sprawdź ponownie' (albo 'Zapłaciłem').",
+        "gate.msg.open_ok": "Stripe jest otwarty w przeglądarce - zapłać tam. To okno samo zauważy płatność i uruchomi silnik.",
         "gate.msg.session_gone": "Sesja zniknęła - zaloguj się "
             "ponownie.",
         "gate.msg.still_none": "Nadal brak aktywnej subskrypcji dla "
@@ -4344,8 +4336,7 @@ STRINGS = {
             "этой сборке.",
         "gate.msg.open_fail": "Не удалось открыть браузер. Откройте "
             "эту ссылку вручную:\n%s",
-        "gate.msg.open_ok": "Stripe открыт в браузере - оплатите "
-            "там, затем «Проверить сейчас» (или «Я оплатил»).",
+        "gate.msg.open_ok": "Stripe открыт в браузере - оплатите там. Это окно само заметит платёж и запустит движок.",
         "gate.msg.session_gone": "Сессия исчезла - войдите снова.",
         "gate.msg.still_none": "У этого входа всё ещё нет активной "
             "подписки.",
@@ -4948,8 +4939,7 @@ STRINGS = {
         "gate.msg.checking": "正在向服务器检查…",
         "gate.msg.no_link": "此版本未配置该付款链接。",
         "gate.msg.open_fail": "无法打开浏览器。请手动打开此链接：\n%s",
-        "gate.msg.open_ok": "Stripe "
-            "已在浏览器打开——在那里付款，然后按“立即重新检查”（或“我已付款”）。",
+        "gate.msg.open_ok": "Stripe 已在浏览器中打开 - 在那里付款。此窗口会自己发现付款并启动引擎。",
         "gate.msg.session_gone": "会话已失效——请重新登录。",
         "gate.msg.still_none": "此登录仍无有效订阅。",
         "gate.msg.still_shared": "仍在另一台电脑上使用——请关闭该会话后重新检查。",
@@ -5367,8 +5357,7 @@ STRINGS = {
         "gate.msg.checking": "サーバーに確認中…",
         "gate.msg.no_link": "この支払いリンクはこのビルドで未設定です。",
         "gate.msg.open_fail": "ブラウザを開けませんでした。手で開いてください:\n%s",
-        "gate.msg.open_ok": "Stripe "
-            "をブラウザで開きました——そこで支払い、「今すぐ再確認」（または「支払いました」）を。",
+        "gate.msg.open_ok": "Stripeあなたのブラウザで開いています - そちらで支払いください。このウィンドウは支払いを自動的に気づき、エンジンを始動します。",
         "gate.msg.session_gone": "セッションが消えました——再サインインを。",
         "gate.msg.still_none": "このログインにはまだ有効なサブスクリプションがありません。",
         "gate.msg.still_shared": "依然ほかのコンピュータで使用中——そのセッションを閉じて再確認を。",
@@ -5834,8 +5823,7 @@ STRINGS = {
         "gate.msg.checking": "서버에 확인 중...",
         "gate.msg.no_link": "이 결제 링크는 이 빌드에서 설정되지 않았습니다.",
         "gate.msg.open_fail": "브라우저를 열 수 없습니다. 이 링크를 수동으로 여세요:\n%s",
-        "gate.msg.open_ok": "Stripe를 브라우저에서 열었습니다 - 거기서 결제 후 ‘지금 "
-            "재확인’(또는 ‘결제했습니다’).",
+        "gate.msg.open_ok": "Stripe가 브라우저에서 열렸습니다 - 그상에서 지불하세요. 이 창은 자동으로 지불을 기보고 엔진을 시작합니다.",
         "gate.msg.session_gone": "세션이 사라졌습니다 - 다시 로그인하세요.",
         "gate.msg.still_none": "이 로그인에 아직 유효한 구독이 없습니다.",
         "gate.msg.still_shared": "여전히 다른 컴퓨터에서 사용 중 - 그 세션을 닫고 재확인.",
@@ -6456,8 +6444,7 @@ STRINGS = {
             "configurato in questa build.",
         "gate.msg.open_fail": "Impossibile aprire un browser. Apri "
             "questo collegamento a mano:\n%s",
-        "gate.msg.open_ok": "Stripe è aperto nel browser - paga lì, "
-            "poi premi «Ricontrolla ora» (o «Ho pagato»).",
+        "gate.msg.open_ok": "Stripe è aperto nel browser - paga lì. Questa finestra rileva il pagamento da sola e avvia il motore.",
         "gate.msg.session_gone": "Sessione persa - accedi di nuovo.",
         "gate.msg.still_none": "Ancora nessun abbonamento attivo per "
             "questo accesso.",
@@ -7243,9 +7230,7 @@ STRINGS = {
             "configurada nesta compilação.",
         "gate.msg.open_fail": "Não foi possível abrir um navegador. "
             "Abra esta ligação à mão:\n%s",
-        "gate.msg.open_ok": "O Stripe está aberto no navegador - "
-            "pague lá, depois prima «Verificar agora» (ou «Já "
-            "paguei»).",
+        "gate.msg.open_ok": "O Stripe está aberto no seu navegador - pague lá. Esta janela percebe o pagamento sozinha e inicia o mecanismo.",
         "gate.msg.session_gone": "A sessão perdeu-se - entre de "
             "novo.",
         "gate.msg.still_none": "Ainda sem subscrição ativa para esta "
@@ -8013,9 +7998,7 @@ STRINGS = {
             "geconfigureerd.",
         "gate.msg.open_fail": "Kon geen browser openen. Open deze "
             "link met de hand:\n%s",
-        "gate.msg.open_ok": "Stripe staat open in uw browser - "
-            "betaal daar, druk dan op «Nu opnieuw controleren» (of "
-            "«Ik heb betaald»).",
+        "gate.msg.open_ok": "Stripe is geopend in uw browser - betaal daar. Dit venster merkt de betaling zelf op en start de engine.",
         "gate.msg.session_gone": "Sessie weg - meld opnieuw aan.",
         "gate.msg.still_none": "Nog steeds geen actief abonnement "
             "voor deze aanmelding.",
@@ -8780,9 +8763,7 @@ STRINGS = {
             "yapılandırılmamış.",
         "gate.msg.open_fail": "Tarayıcı açılamadı. Bu bağlantıyı "
             "elle açın:\n%s",
-        "gate.msg.open_ok": "Stripe tarayıcınızda açık - orada "
-            "ödeyin, sonra «Şimdi yeniden denetle» (veya «Ödedim»)ye "
-            "basın.",
+        "gate.msg.open_ok": "Stripe tarayıcınızda açık - orada ödeyin. Bu pencere ödemeyi kendiliğinden fark eder ve motoru başlatır.",
         "gate.msg.session_gone": "Oturum kayboldu - yeniden giriş "
             "yapın.",
         "gate.msg.still_none": "Bu giriş için hâlâ etkin abonelik "
@@ -9536,9 +9517,7 @@ STRINGS = {
             "цій збірці.",
         "gate.msg.open_fail": "Не вдалося відкрити браузер. "
             "Відкрийте це посилання вручну:\n%s",
-        "gate.msg.open_ok": "Stripe відкрито у браузері - сплатіть "
-            "там, потім натисніть «Перевірити зараз» (або «Я "
-            "сплатив»).",
+        "gate.msg.open_ok": "Stripe відкритий у вашому браузері - оплатіть там. Це вікно само помітить оплату та запустить рухавик.",
         "gate.msg.session_gone": "Сесія зникла - увійдіть знову.",
         "gate.msg.still_none": "Для цього входу все ще немає "
             "активної підписки.",
@@ -10304,8 +10283,7 @@ STRINGS = {
             "kwenye jengo hili.",
         "gate.msg.open_fail": "Imeshindwa kufungua kivinjari. Fungua "
             "kiungo hiki kwa mkono:\n%s",
-        "gate.msg.open_ok": "Stripe imefunguliwa kwenye kivinjari - "
-            "lipa huko, kisha bonyeza «Kagua sasa» (au «Nimelipa»).",
+        "gate.msg.open_ok": "Stripe imefunguliwa katika kivinjari chako - lipa hapo. Dirisha hili lugha linajua malipo yenyewe na kuanza injini.",
         "gate.msg.session_gone": "Kipindi kimepotea - ingia tena.",
         "gate.msg.still_none": "Bado hakuna usajili hai kwa kuingia "
             "huku.",
