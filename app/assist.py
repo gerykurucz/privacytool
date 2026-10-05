@@ -378,10 +378,10 @@ class App(object):
             watch_center = bool(self.cfg.get("watch_center_only", False))
         except Exception:
             watch_center = False
-        if watch_center and not bool(self.cfg.get("hold_follow")):
-            # The hold-follow worker keeps chasing the pointer while a
-            # key is held - that feature is cursor-anchored by design,
-            # so it ignores this switch.
+        if watch_center:
+            # Applies to every assisted path - classic snap, guide and
+            # the hold-follow worker alike: with the switch on, the
+            # whole product watches only the screen centre.
             vx, vy, vw, vh = self._virtual_screen()
             mx = vx + vw // 2
             my = vy + vh // 2
@@ -425,8 +425,11 @@ class App(object):
                 return None
             self.fail_count = 0
             if res.kind == "target" and res.target is not None:
-                ax = origin[0] + res.target.abs_x
-                ay = origin[1] + res.target.abs_y
+                # SnapTarget stores region-relative dx/dy (see the main
+                # path below, which feeds them straight into SetCursorPos
+                # at the pointer); no abs_x attribute exists.
+                ax = origin[0] + res.target.dx
+                ay = origin[1] + res.target.dy
                 track = self._track
                 if track is not None:
                     now = time.perf_counter()
