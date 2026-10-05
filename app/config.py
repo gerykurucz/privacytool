@@ -166,6 +166,15 @@ DEFAULT_CONFIG = {
     "motion_predict": False,
     "motion_lead_ms": 50,
 
+    # Watch the screen centre only: when true, every scan is anchored
+    # at the middle of the virtual screen instead of under the cursor -
+    # for fixed-position layouts (kiosks, TV guides, one app filling the
+    # window) where the items never move. The search radius stays as set
+    # on Advanced; a click far outside that area simply passes through
+    # unassisted, like any empty space. Off = the classic cursor-anchored
+    # behaviour, bit-for-bit.
+    "watch_center_only": False,
+
     # 3D snap follower: track position AND scale with a Kalman filter
     # instead of the legacy linear fit. Outliers are rejected per scan
     # (one bad frame damps the step instead of blinding the track),

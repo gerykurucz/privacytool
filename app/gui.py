@@ -495,6 +495,14 @@ META = {
                        "or items in the same place win ties for a "
                        "while - handy for scrollbars and repeated "
                        "clicks on one control.", "bool", None),
+    "watch_center_only": ("Watch the screen centre only",
+                          "For fixed layouts where the items never "
+                          "move: assistance always looks at the middle "
+                          "of the screen instead of following your "
+                          "cursor. Clicks far outside that area pass "
+                          "through untouched, like empty space. Off "
+                          "(default): the usual cursor-anchored search.",
+                          "bool", None),
     "follow_learn": ("What the memory may learn",
                      "Only items in my colour: a misclick that snapped "
                      "somewhere else cannot retarget the memory. Every "
@@ -746,6 +754,7 @@ for _i in range(1, REC_PLAY_SLOTS + 1):
 # its hotkeys, theme with the header switch, the rest are deployment.)
 TAB_ASSIST = ["block_bound_keys", "hold_follow", "rapid_click_snap",
               "follow_enabled", "motion_predict", "motion_3d",
+              "watch_center_only",
               "accent_only",
               "adaptive_threshold", "luminance_norm",
               "color_adapt", "accent_variants", "accent_coherent",
