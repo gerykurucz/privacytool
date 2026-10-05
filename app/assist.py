@@ -367,6 +367,82 @@ class App(object):
         if state is not None and state.get("abandoned"):
             return None
 
+        # "Watch the screen centre only": the search box lives at the
+        # middle of the virtual screen, fixed, no matter where the cursor
+        # is - for kiosk-style layouts whose items never move. A click
+        # that lands outside the box (plus the reach the user configured)
+        # passes through untouched, exactly like a click over empty space
+        # in the normal mode.
+        watch_center = False
+        try:
+            watch_center = bool(self.cfg.get("watch_center_only", False))
+        except Exception:
+            watch_center = False
+        if watch_center and not bool(self.cfg.get("hold_follow")):
+            # The hold-follow worker keeps chasing the pointer while a
+            # key is held - that feature is cursor-anchored by design,
+            # so it ignores this switch.
+            vx, vy, vw, vh = self._virtual_screen()
+            mx = vx + vw // 2
+            my = vy + vh // 2
+            # The watched square is exactly the classic screen-centre
+            # capture: "search distance" is read as the SIDE length of
+            # the box, default 150 -> a 150x150 window fixed at the
+            # middle, scaled with DPI like every other distance here.
+            half = max(24, int(round(
+                float(self.cfg.get("radius", 150)) * self.dpi_scale))) // 2
+            # A press outside the box is not assistance territory at all:
+            # mark it and let the caller replay the click untouched at
+            # the pointer - no scanning, no snapping toward the middle.
+            if abs(x - mx) > half or abs(y - my) > half:
+                if state is not None:
+                    state["center_pass"] = True
+                return None
+            # Inside the box: always analyse the full centre square,
+            # anchored on the screen middle regardless of where the
+            # cursor actually is.
+            cap = max(48, half * 2)
+            img, cx, cy, origin, edges = self.grab_around(mx, my, cap)
+            if img is None:
+                return None
+            follow_ctx = None
+            if bool(self.cfg.get("follow_enabled")):
+                follow_ctx = self.follow.context(
+                    origin[0], origin[1],
+                    float(self.cfg.get("follow_seconds", 20))
+                )
+            try:
+                res = scan_region(img, cx, cy, self.cfg.values, cap,
+                                  follow_ctx=follow_ctx,
+                                  edge_flags=edges)
+            except Exception as exc:
+                self.fail_count += 1
+                log("scan error: %r" % (exc,))
+                if self.fail_count >= 5:
+                    self.scanner_dead = True
+                    log("Scanner disabled after repeated errors. "
+                        "Clicks pass through.")
+                return None
+            self.fail_count = 0
+            if res.kind == "target" and res.target is not None:
+                ax = origin[0] + res.target.abs_x
+                ay = origin[1] + res.target.abs_y
+                track = self._track
+                if track is not None:
+                    now = time.perf_counter()
+                    track.append((now, ax, ay))
+                    while track and now - track[0][0] > 0.6:
+                        track.popleft()
+                    try:
+                        area = float(getattr(res.target, "area", 0) or 0)
+                        if area > 0.0:
+                            self._tracker.update(
+                                now, (ax, ay, math.sqrt(area)))
+                    except Exception:
+                        pass
+                return res.target
+            return None
+
         # The capture is ALWAYS the full radius the user asked for. An
         # older perf governor shrank it to 60% whenever a scan ran over
         # 90 ms, which silently broke the "search distance in pixels"
@@ -636,7 +712,10 @@ class App(object):
             if target is None:
                 self.pass_count += 1
                 # exactly-once here too: the scanner's stall path may
-                # have returned this click a moment ago
+                # have returned this click a moment ago.
+                # "Watch the screen centre only" deliberately refused
+                # this spot (state["center_pass"]) - the press must be
+                # replayed at the pointer, not snapped to the middle.
                 if self._claim_delivery(state):
                     self.reinject_click(x, y)
                 out["handled"] = True
@@ -787,6 +866,9 @@ class App(object):
 
             if target is None:
                 self.pass_count += 1
+                # "Watch the screen centre only": a press outside the
+                # watched box must not even be guided onto the middle -
+                # leave the cursor exactly where the user left it.
                 out["handled"] = True
                 return
 
