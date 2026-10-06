@@ -697,28 +697,37 @@ META = {
     # v8.48: auto-click. The ONLY setting in the product that makes the
     # app act with no gesture from the user, so its label leads with the
     # consequence ("clicks on its own") rather than the mechanism.
-    "auto_click": ("Click my colour by itself",
-                   "The screen is scanned by itself and the best item in "
-                   "YOUR colour is clicked, without you clicking "
-                   "anything. Needs 'My colour(s)' to be set - without "
-                   "one there is nothing to aim at, so it waits quietly "
-                   "until you set one. It never clicks while paused, "
-                   "never clicks "
+    "auto_click": ("Click items by itself",
+                   "The screen centre is scanned by itself and the best "
+                   "item is clicked, without you clicking anything - "
+                   "turning this on IS the request. With 'My colour(s)' "
+                   "set it clicks only items in your colour; without a "
+                   "colour it clicks the highest-CONTRAST item instead "
+                   "(crisp buttons, icons and controls only - raise the "
+                   "crispness setting below if it picks too eagerly). It "
+                   "never clicks while paused, never clicks "
                    "Snappy AI's own windows, never clicks a colour on "
                    "the Never-click list, and stops at the limit below. "
                    "Turn this on only where you want it, and press Pause "
                    "at any time to take the mouse back.",
                    "bool", None),
     "auto_click_interval": ("Seconds between auto-clicks",
-                            "How often the screen is checked for your "
-                            "colour (0.5-60). A slow number is the safe "
-                            "one: 2-5 suits a dialog you are watching.",
+                            "How often the screen centre is re-checked "
+                            "(0.1-60). The default 0.1 s = ten looks a "
+                            "second, so a fresh item is clicked almost "
+                            "as soon as it appears; the same-spot guard "
+                            "and the pause-before-click keep it from "
+                            "hammering one control. Raise it to 2-5 for "
+                            "a calmer pace.",
                             "float", None),
     "auto_click_min_contrast": ("How crisp an auto-click target must be",
                                 "On the same scale as 'Minimum edge "
-                                "strength'. Start at the default and raise "
-                                "it if it clicks the wrong thing: only "
-                                "strong, clearly drawn items will qualify.",
+                                "strength'. This gate matters MOST when "
+                                "no colour is set: with colour-free "
+                                "auto-clicking only items above this "
+                                "crispness are eligible. Start at the "
+                                "default and raise it if it clicks the "
+                                "wrong thing.",
                                 "int", None),
     "auto_click_max_clicks": ("Auto-click limit per session",
                               "How many times it may click on its own "

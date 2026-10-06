@@ -230,17 +230,17 @@ DEFAULT_CONFIG = {
     # command "a" toggles this at runtime.
     "accent_only": False,
 
-    # Auto-click ("click the blue thing for me"): the ONLY feature that
-    # acts without a user gesture. The engine periodically scans the
-    # middle of the screen for items that contain your accent colour and
-    # clear a contrast gate, moves the cursor there and clicks it.
+    # Auto-click ("click the buttons for me"): the ONLY feature that
+    # acts without a user gesture - turning this switch ON is itself the
+    # request (the mouse1 equivalent). The engine scans the middle of the
+    # screen every auto_click_interval (default 100 ms) for the best item
+    # and clicks it: with an accent colour set, only items carrying that
+    # colour qualify; without one, the highest-contrast item in the centre
+    # square qualifies, held to the stricter auto_click_min_contrast gate.
     #
     # SAFETY IS STRUCTURAL, not advisory:
-    #   * it refuses to arm at all while accent_color is off - without a
-    #     colour to aim at, "auto-click" would mean "click whatever is
-    #     nearest", which is never what anyone means;
-    #   * accent_only is forced on for the auto scan, so only items
-    #     carrying the accent colour are ever eligible;
+    #   * colour-free mode clicks ONLY crisp, clearly drawn items (the
+    #     min_contrast gate above), never blurry background noise;
     #   * exclude_color still wins: a colour on the never-click list
     #     removes the item from the scan entirely;
     #   * it never clicks inside Snappy AI's own windows;
@@ -249,11 +249,15 @@ DEFAULT_CONFIG = {
     #     settle delay cap how fast it can act.
     "auto_click": False,
 
-    # Seconds between automatic scans.
-    "auto_click_interval": 2.0,
+    # Seconds between automatic scans. The default is 100 ms: the loop
+    # re-scans the centre square ten times a second and fires at the
+    # first qualifying item (repeat guard + settle below still pace it).
+    "auto_click_interval": 0.1,
 
     # Contrast gate for an auto-click target, on the same scale as
-    # min_contrast. Raise it and only strong, crisp items qualify.
+    # min_contrast. This is what makes colour-free auto-clicking safe:
+    # with no accent colour set, ONLY items this crisp are eligible.
+    # Raise it and only strong, crisp items qualify.
     "auto_click_min_contrast": 60,
 
     # Safety cap: automatic clicks per launched session. The engine stops
@@ -702,10 +706,10 @@ class Config:
         "snap_offset_x": (-200, 200),
         "snap_offset_y": (-200, 200),
         # Auto-click bounds. The floors/ceilings here are SAFETY limits,
-        # not taste: a sub-second interval would click faster than a person
-        # can react, and an unbounded cap would turn a misconfigured setup
-        # into runaway input.
-        "auto_click_interval": (0.5, 60.0),
+        # not taste: the interval may now go down to 100 ms (the user's
+        # requested cadence) but never below it, and an unbounded cap
+        # would turn a misconfigured setup into runaway input.
+        "auto_click_interval": (0.1, 60.0),
         "auto_click_min_contrast": (20, 150),
         "auto_click_max_clicks": (1, 200),
         "auto_click_settle_ms": (0, 2000),
@@ -769,9 +773,10 @@ class Config:
 
         if self.values.get("auto_click") \
                 and not parse_accents(self.values.get("accent_color")):
-            log("config: auto_click is on but accent_color is off - it "
-                "stays on and refuses to act until a colour to aim at "
-                "is set again.")
+            log("config: auto_click is on with no accent colour - it "
+                "will click the highest-contrast item in the centre "
+                "square instead (raise auto_click_min_contrast if it "
+                "picks too eagerly).")
 
         if str(self.values.get("follow_learn", "accent")).lower() \
                 not in ("accent", "any"):

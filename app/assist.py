@@ -2020,11 +2020,13 @@ class App(object):
     # user asking for that specific click, so it is deliberately the most
     # conservative. Every gate below can only PREVENT a click:
     #
-    #   1. the setting must be on, and an accent colour must exist - a
-    #      colour is the only statement of intent available, so with
-    #      accent_color off the feature never arms (config._sanitize
-    #      keeps your switches exactly as you left them and only logs
-    #      the mismatch; _auto_can_arm below is what refuses to act);
+    #   1. the setting must be on. An accent colour is NOT required any
+    #      more: turning this switch on IS the user's request to click
+    #      items (mouse1-style intent). With a colour set it aims at that
+    #      colour (accent_only forced on for the scan); without one it
+    #      falls back to the contrast-first ranking every other feature
+    #      uses, held to the stricter auto_click_min_contrast gate so
+    #      only crisp, clearly drawn items qualify;
     #   2. the app must be LAUNCHED. Paused means the keyboard and mouse
     #      are entirely the user's - same rule as every other action;
     #   3. the foreground window must not be ours;
@@ -2043,16 +2045,21 @@ class App(object):
     # ------------------------------------------------------------------
 
     def _auto_can_arm(self):
-        """(ok, reason) - may the auto-click loop act at all right now?"""
+        """(ok, reason) - may the auto-click loop act at all right now?
+
+        An accent colour is NO LONGER required. The user's stated intent
+        ("pressed mouse1") is the gesture; with no colour set the scan
+        falls back to the same contrast-first ranking every other feature
+        uses, gated by the stricter auto_click_min_contrast so only a
+        crisp, clearly drawn item can qualify. When a colour IS set it
+        still wins (accent_only), exactly as before.
+        """
         if not bool(self.cfg.get("auto_click", False)):
             return False, "auto_click is off"
 
         if self._auto_done:
             return False, "the per-session cap is spent"
 
-        accents = vision._parse_accents(self.cfg.get("accent_color"))
-        if not accents:
-            return False, "no accent colour to aim at"
         return True, ""
 
     def _auto_reset_session(self):
@@ -2067,24 +2074,28 @@ class App(object):
             self._auto_done = False
             self._auto_armed = False
             try:
-                gap = float(self.cfg.get("auto_click_interval", 2.0))
+                gap = float(self.cfg.get("auto_click_interval", 0.1))
             except (TypeError, ValueError):
-                gap = 2.0
-            self._auto_next = time.perf_counter() + max(0.5, gap)
+                gap = 0.1
+            self._auto_next = time.perf_counter() + max(0.1, gap)
 
     def _auto_scan_config(self):
         """Config snapshot for the auto scan.
 
-        accent_only is forced ON: the user already chose which colour the
-        click is for, so nothing else may qualify. min_contrast is raised
-        to auto_click_min_contrast, the same gate a manual click has to
-        clear but tuned for acting without feedback - a guess that is only
-        half-sure must not press a button on its own. Every other setting
-        (accent colour, exclude list, tolerances, size gates) is the
-        user's own, untouched.
+        accent_only is forced on ONLY when the user actually set a colour
+        (then it is their explicit statement of intent and nothing else
+        may qualify). With no accent colour configured the scan degrades
+        to plain contrast-first ranking - the same engine every manual
+        path uses - held to the stricter gate below. min_contrast is
+        raised to auto_click_min_contrast, the same scale a manual click
+        has to clear but tuned for acting without feedback - a guess that
+        is only half-sure must not press a button on its own. Every other
+        setting (accent colour, exclude list, tolerances, size gates) is
+        the user's own, untouched.
         """
         cfgv = dict(self.cfg.values)
-        cfgv["accent_only"] = True
+        accents = _parse_accents(cfgv.get("accent_color"))
+        cfgv["accent_only"] = bool(accents)
         cfgv["min_contrast"] = max(
             float(cfgv.get("min_contrast", 48)),
             float(self.cfg.get("auto_click_min_contrast", 60)),
@@ -2213,7 +2224,19 @@ class App(object):
 
     def run_auto_click_worker(self):
         """The auto-click loop. Own thread, daemon, never blocks a click."""
-        idle = 0.2
+
+        def _gap():
+            try:
+                g = float(self.cfg.get("auto_click_interval", 0.1))
+            except (TypeError, ValueError):
+                g = 0.1
+            return max(0.1, g)
+
+        # Poll floor between scans. With the interval at its 100 ms
+        # default this keeps the loop responsive without spinning; it is
+        # deliberately below the old 200 ms sleep so a fast interval is
+        # actually honoured end to end.
+        idle = 0.05
 
         while not self.stop.is_set():
             try:
@@ -2255,8 +2278,7 @@ class App(object):
                                                    y - last[1]) < repeat:
                     # Same place as last time - it is either still up, or
                     # the scan has not caught up with the click. Wait.
-                    self._auto_next = time.perf_counter() + \
-                        float(self.cfg.get("auto_click_interval", 2.0))
+                    self._auto_next = time.perf_counter() + _gap()
                     time.sleep(idle)
                     continue
 
@@ -2264,13 +2286,13 @@ class App(object):
                     announced = self._auto_armed
                     self._auto_armed = True
                 if not announced:
-                    log("Auto-click is ON: scanning for %s every %ss."
-                        % (self.cfg.get("accent_color"),
-                           float(self.cfg.get("auto_click_interval", 2.0))))
+                    what = self.cfg.get("accent_color") or \
+                        "high-contrast items"
+                    log("Auto-click is ON: scanning for %s every %.3gs."
+                        % (what, _gap()))
 
                 self._auto_fire(x, y)
-                self._auto_next = time.perf_counter() + \
-                    float(self.cfg.get("auto_click_interval", 2.0))
+                self._auto_next = time.perf_counter() + _gap()
             except Exception as exc:
                 log("auto-click worker error: %r" % (exc,))
                 time.sleep(idle)

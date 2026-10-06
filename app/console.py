@@ -433,23 +433,24 @@ def windows_main(cfg, identity=None):
                        int(cfg.get("follow_seconds", 20))))
 
             elif line in ("c", "autoclick"):
-                if not _parse_accents(cfg.get("accent_color")):
-                    print("accent_color is off. Set it first (GUI Colors "
-                          "tab, or config.ini: accent_color = blue), "
-                          "then press Apply in the GUI.")
-                    print("Auto-click needs a colour to aim at - without "
-                          "one there is nothing safe to click.")
-                else:
-                    new_state = not bool(cfg.get("auto_click"))
-                    cfg.set("auto_click", new_state)
-                    if new_state:
-                        app._auto_reset_session()
-                    log("AUTO-CLICK: %s (clicks %s by itself every %.1fs, "
-                        "limit %d per session)"
-                        % ("ON" if new_state else "OFF",
-                           cfg.get("accent_color"),
-                           float(cfg.get("auto_click_interval", 2.0)),
-                           int(cfg.get("auto_click_max_clicks", 10))))
+                new_state = not bool(cfg.get("auto_click"))
+                cfg.set("auto_click", new_state)
+                if new_state:
+                    app._auto_reset_session()
+                what = cfg.get("accent_color") or "high-contrast items"
+                log("AUTO-CLICK: %s (clicks %s by itself every %.3gs, "
+                    "limit %d per session)"
+                    % ("ON" if new_state else "OFF",
+                       what,
+                       float(cfg.get("auto_click_interval", 0.1)),
+                       int(cfg.get("auto_click_max_clicks", 10))))
+                if new_state and not _parse_accents(cfg.get("accent_color")):
+                    print("No accent colour set: auto-click will take "
+                          "the highest-CONTRAST item in the centre "
+                          "square instead. Raise 'How crisp an "
+                          "auto-click target must be' if it picks too "
+                          "eagerly, or set a colour (GUI Colors tab / "
+                          "config.ini: accent_color = blue) to aim it.")
 
             elif line in ("v", "calibrate"):
                 accents = _parse_accents(cfg.get("accent_color"))
