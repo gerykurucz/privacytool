@@ -205,9 +205,17 @@ class InterceptionBackend(object):
         if plain is not None:
             return all(n in plain for n in
                        InterceptionBackend._REQUIRED_EXPORTS)
+        # v8.57: ctypes' own lookup FIRST. The official v1.0.1 DLL
+        # exports plain dllexport'd C names, so this hits on any genuine
+        # library and we never touch the loader APIs at all.
         if all(hasattr(dll, n) for n in
                InterceptionBackend._REQUIRED_EXPORTS):
             return True
+        # Only nonstandard (decorated) rebuilds fall through to the
+        # direct GetProcAddress probe. No PE-table scan anywhere: that
+        # path loaded contract DLLs via forwarded-export resolution and
+        # silently killed the process (v8.56 regression). A DLL that
+        # fails both checks is simply not Interception - keep searching.
         return InterceptionBackend._abi1_names(dll)
 
     @staticmethod
@@ -258,9 +266,15 @@ class InterceptionBackend(object):
                         break
             if not all(n in found for n in
                        InterceptionBackend._REQUIRED_EXPORTS):
-                # Second path: read the PE export table directly. Immune
-                # to any runtime hooking of the loader APIs.
-                return InterceptionBackend._scan_export_table(dll)
+                # v8.57: deliberately NO PE-export-table fallback here.
+                # The old scan resolved forwarded exports by calling
+                # WinDLL() on the forward target - which for MSVC-built
+                # DLLs means loading api-ms-win-crt-* contract modules
+                # mid-startup and silently killing the process. If the
+                # GetProcAddress probe cannot find the four required
+                # names, this file is not a usable Interception library;
+                # _load_dll keeps searching other candidates instead.
+                return False
             dll._plain_exports = found       # plain name -> abs address
             dll._plain_image_base = base     # module load address
             return True
@@ -269,25 +283,29 @@ class InterceptionBackend(object):
 
     @staticmethod
     def _scan_export_table(dll):
-        """v8.56: read the export table from the FILE ON DISK, never from
-        the loaded image.
+        """v8.57: NEVER called. Kept only so old tests keep compiling.
 
-        The previous revision parsed the in-memory IMAGE_EXPORT_DIRECTORY
-        and - fatally - dereferenced ctypes' private `_handle` attribute
-        as if it were an HMODULE. On CPython 3.8+ that value is just a
-        malloc'd bookkeeping pointer, so `from_address()` read garbage
-        (or raised), the whole scan returned False, and a perfectly good
-        official interception.dll was reported as "does not export the
-        Interception functions". A malformed in-memory parse could also
-        AV-kill the process silently - exactly the "process runs, no GUI,
-        no log" symptom.
+        This function was the silent-death bug of v8.56. Its stated plan
+        ("map the DLL file") was not what the code did: forwarded-export
+        entries called ctypes.WinDLL(...) on whatever ASCII sat at the
+        RVA - for real MSVC build tools that string is a forward to
+        api-ms-win-crt-* / ext-ms-* contract DLLs. Windows' downlevel
+        API-set shim resolves those names by LOADING THE REAL RUNTIME
+        DLLS inside the running process, which detaches/rebases modules
+        while this app is initialising its GUI and kills the process
+        without a traceback or a log line - exactly "process exists, no
+        window, gone when interception.dll is deleted".
 
-        This parser maps the DLL file itself (PE header -> export
-        directory -> names/ordinals/RVAs). It touches no loader APIs and
-        no live memory beyond our own file buffer, so it cannot crash
-        the process and works even when the loader is hooked. Addresses
-        are recorded as RVAs plus the module handle we actually loaded;
-        _install_plain_lookup turns them into callables."""
+        The scan is also unnecessary now: the official v1.0.1 DLL
+        exports plain dllexport'd C names, which ctypes finds directly,
+        and kernel32.GetProcAddress covers every decorated variant. So
+        the fallback refuses unconditionally instead of risking the
+        loader again."""
+        return False
+
+    @staticmethod
+    def _scan_export_table_disabled(dll):
+        """(dead code kept for reference - see _scan_export_table above)"""
         try:
             path = getattr(dll, "_snappy_path", None)
             if not path:
