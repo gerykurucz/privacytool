@@ -18,7 +18,7 @@ import threading
 import time
 
 APP_NAME = "Snappy AI"
-APP_VERSION = "8.66"
+APP_VERSION = "8.67"
 IS_WINDOWS = (os.name == "nt")
 print_lock = threading.Lock()
 

@@ -3423,6 +3423,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         return (np.dstack([r, g, b]) * 255).astype(np.uint8)
 
     def render_sv():
+        if not HAVE_PIL:
+            return _render_sv_fallback()
         buf = io.BytesIO()
         _PILImage.fromarray(_hsv_grid(picker["h"]), "RGB").save(
             buf, format="PNG")
@@ -3432,7 +3434,31 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                                tags="bg")
         place_sv_mark()
 
+    def _render_sv_fallback():
+        """v8.67: the picker used to call PIL unconditionally - on a
+        Pillow-less build the Colors tab died with a raw NameError the
+        moment it was built. Pure-tk fallback: coarse S x V rectangles
+        (10x10 is visually close enough at this size and cheap)."""
+        n = 10
+        cell = SV // n
+        sv_canvas.delete("bg")
+        h = picker["h"]
+        for iy in range(n):
+            v = 1.0 - (iy + 0.5) / n
+            for ix in range(n):
+                s = (ix + 0.5) / n
+                r, g, b = colorsys.hsv_to_rgb(h, s, v)
+                sv_canvas.create_rectangle(
+                    ix * cell, iy * cell,
+                    (ix + 1) * cell - 1, (iy + 1) * cell - 1,
+                    fill="#%02x%02x%02x" % (int(r * 255), int(g * 255),
+                                            int(b * 255)),
+                    outline="", tags="bg")
+        place_sv_mark()
+
     def render_hue():
+        if not HAVE_PIL:
+            return _render_hue_fallback()
         arr = np.zeros((22, SV, 3), dtype=np.uint8)
         for x in range(SV):
             r, g, b = colorsys.hsv_to_rgb(x / (SV - 1.0), 1.0, 1.0)
@@ -3445,6 +3471,19 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         hue_canvas.delete("bg")
         hue_canvas.create_image(0, 0, anchor="nw", image=hue_photo[0],
                                 tags="bg")
+        place_hue_mark()
+
+    def _render_hue_fallback():
+        n = 20
+        w = SV // n
+        hue_canvas.delete("bg")
+        for i in range(n):
+            r, g, b = colorsys.hsv_to_rgb((i + 0.5) / n, 1.0, 1.0)
+            hue_canvas.create_rectangle(
+                i * w, 0, (i + 1) * w - 1, 21,
+                fill="#%02x%02x%02x" % (int(r * 255), int(g * 255),
+                                        int(b * 255)),
+                outline="", tags="bg")
         place_hue_mark()
 
     def place_sv_mark():

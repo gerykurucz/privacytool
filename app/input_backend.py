@@ -594,8 +594,14 @@ class InterceptionBackend(object):
         to park anything forever."""
         if not IS_WINDOWS:
             return False
+        # v8.67: the old cache was permanent - installing the driver
+        # while the app ran never took effect until restart. Probe
+        # results now expire after 30 s so a "Re-check" or the settings
+        # dropdown picks up an install/uninstall without relaunching.
+        _now = time.monotonic()
         cached = getattr(cls, "_avail_cache", None)
-        if cached is not None:
+        cached_at = getattr(cls, "_avail_cache_at", 0.0)
+        if cached is not None and (_now - cached_at) < 30.0:
             return cached
         ok = False
         try:
@@ -651,6 +657,7 @@ class InterceptionBackend(object):
         except Exception:
             ok = False
         cls._avail_cache = ok
+        cls._avail_cache_at = time.monotonic()
         return ok
 
     def _build_signatures(self):

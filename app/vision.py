@@ -320,7 +320,9 @@ def _flood_bg(walls, mask):
         g[:, 1:] |= bg[:, :-1]
         g[:, :-1] |= bg[:, 1:]
         g &= free
-        g |= seed
+        # v8.67: removed the old `g |= seed` line - it was a no-op
+        # (seeds are inside bg, and bg is already inside free, so they
+        # survive the AND anyway) and only confused readers.
         if np.array_equal(g, bg):
             return bg
         bg = g
@@ -747,32 +749,17 @@ def _accent_similarity(h, s, v, ah, asat, av, tol, soft=0.0):
 
 
 # ----------------------------------------------------------------------
-# Perceptual matching (accent_matcher = "oklab", the default)
+# Perceptual colour helpers.
 #
-# OKLab (Bjoern Ottosson, 2020) is a perceptually uniform colour space:
-# equal numeric distance ~ equal perceived difference, with lightness,
-# chroma and hue properly separated. Two consequences for the accent
-# engine:
-#   * "hue is meaningless for grey accents" falls out of the maths
-#     instead of needing the classic scorer's saturation-ratio hack,
-#     and a fully saturated green can never ride a blue accent's
-#     tolerance just because their s/v stats agree (a real false
-#     positive class of the weighted-HSV matcher);
-#   * the conversion is two small matrix multiplies plus a cube root -
-#     vectorised with numpy it measures ~2x FASTER per frame than the
-#     HSV path it replaces. No new dependency: the published formulae
-#     (MIT reference implementations) are inlined below.
+# The accent MATCHER itself moved to CIEDE2000-on-CIELAB in v8.49; the
+# OKLab matcher it replaced (accent_oklab + its tolerance constants) was
+# dead code and has been removed (v8.67 full-repo review). What remains
+# here is live: _rgb01_to_oklab powers suggest_accents' perceptual
+# histogram, and blend_similarity's two constants rescue anti-aliased
+# edges on any background.
 # ----------------------------------------------------------------------
-OKLAB_WL = 1.6             # lightness forgiven more than hue/chroma
-OKLAB_TOL_BASE = 0.05      # distance budget floor (OKLab units)
-OKLAB_TOL_SOFT = 0.30      # ...plus this * accent_soft fraction
-OKLAB_NEUTRAL_C = 0.05     # accent chroma below this reads as "grey"
-OKLAB_NEUTRAL_ALLOW = 0.03 # ClearType/edge fringe allowance near grey
-OKLAB_NEUTRAL_K = 2.0      # extra chroma penalty for neutral accents
 OKLAB_BLEND_MIN_A = 0.25   # blend line: minimum accent ink amount
 OKLAB_BLEND_EPS = 0.05     # blend line: max deviation (0..1 RGB)
-
-_oklab_cache = {}
 
 
 def _rgb01_to_oklab(px):
@@ -790,20 +777,6 @@ def _rgb01_to_oklab(px):
     A = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_
     B = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
     return np.stack([L, A, B], axis=-1)
-
-
-def _accent_oklab(ah, asat, av):
-    """Cached ((L, a, b), chroma, rgb01) for one accent in OpenCV HSV."""
-    key = (round(float(ah), 2), round(float(asat), 2), round(float(av), 2))
-    hit = _oklab_cache.get(key)
-    if hit is None:
-        if len(_oklab_cache) > 128:
-            _oklab_cache.clear()
-        rgb = np.array(hsv_to_rgb(ah, asat, av), dtype=np.float32) / 255.0
-        lab = _rgb01_to_oklab(rgb)
-        hit = (lab, float(np.hypot(lab[1], lab[2])), rgb)
-        _oklab_cache[key] = hit
-    return hit
 
 
 def blend_similarity(px_bgr01, acc_rgb01, bg_bgr01):
@@ -1667,6 +1640,11 @@ class MotionTracker(object):
 
         n = self.dim
         if n == 3 and abs(z[2] - self.x[2]) > self.SCALE_JUMP:
+            # Different item under the scanner, NOT fast motion: unlike
+            # the gated-miss restart above, this deliberately does NOT
+            # restore _prev_obs for dead-reckoning - carrying velocity
+            # from a point that belongs to the OLD item would fling the
+            # new track toward wherever the previous target was heading.
             self.reset()                    # different item: fresh track
             return self.update(t, pos)
 

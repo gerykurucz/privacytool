@@ -528,7 +528,15 @@ class SafeConfigReader:
             return raw.lower() in ("1", "true", "yes", "on")
 
         if isinstance(default, int):
-            return int(float(raw))
+            # v8.67: round instead of truncate (150.7 -> 151, not 150)
+            # and warn on a fractional hand edit instead of silently
+            # misbehaving - the file's own philosophy.
+            val = float(raw)
+            rounded = int(round(val))
+            if rounded != val:
+                log("Config value %r is not an integer; rounded to "
+                    "%d." % (raw, rounded))
+            return rounded
 
         if isinstance(default, float):
             return float(raw)

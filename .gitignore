@@ -1,7 +1,8 @@
 build/
+dist/
 app/__pycache__/
+__pycache__/
+*.pyc
 SnappyAI.exe
 config.json
 interception.dll
-__pycache__/
-*.pyc
