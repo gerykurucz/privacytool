@@ -175,17 +175,63 @@ class InterceptionBackend(object):
 
     @staticmethod
     def _abi1_names(dll):
-        # v8.52: the official v1.0.1 interception.dll is built with MSVC
-        # __declspec(dllexport) WITHOUT extern "C", so its exports are
-        # DECORATED C++ names (?interception_send@@YA... or plain
-        # interception_send@4 depending on build). ctypes' GetProcAddress
-        # only ever asks for the undecorated name and finds NOTHING on a
-        # perfectly good official DLL - that was the real reason users
-        # holding the correct library/interception.dll still saw "does
-        # not export the Interception functions". Read the PE export
-        # table directly, map every interception_* name (decorated or
-        # not) to its absolute function address, and remember them;
-        # _install_plain_lookup then binds the plain names ctypes wants.
+        # v8.53: THE REAL BUG. The official v1.0.1 interception.dll is a
+        # __stdcall library: its exports are stdcall-decorated plain names
+        # like "interception_create_context@4" / "interception_send@16".
+        # ctypes' GetProcAddress asks for the UNDECORATED name and finds
+        # nothing - hasattr() fails on a perfectly good official DLL, and
+        # the old code reported "does not export the Interception
+        # functions" even though the user held exactly the right file.
+        # Fix (v1.0.1-proven pattern from oblitum/Interception's own
+        # tests): call kernel32.GetProcAddress THROUGH ctypes with the
+        # DECORATED name as an explicit c_char_p argument - bypassing
+        # ctypes' implicit undecorated lookup entirely. This was proven
+        # to work when the DLL sits next to the exe; it failed only when
+        # Windows API patching tools (BitDefender-style) hooked
+        # LoadLibraryW in GUI-subsystem processes and redirected the load
+        # elsewhere. So we ALSO keep a PE-export-table scan as a fallback
+        # that never touches GetProcAddress at all.
+        try:
+            k32 = ctypes.windll.kernel32
+            k32.GetProcAddress.restype = ctypes.c_void_p
+            k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            base = getattr(dll, "_handle", None)
+            if not base:
+                return False
+            found = {}
+            for n in InterceptionBackend._REQUIRED_EXPORTS:
+                # stdcall decoration: "@<bytes of pushed args>"; exact
+                # size unknown here, so probe plausible sizes plus the
+                # plain name (cdecl builds). Any hit binds correctly as
+                # long as we later cast with WINFUNCTYPE (stdcall cleanup
+                # matches whatever the export really is).
+                for cand in ([n.encode("ascii")] +
+                             [b"%s@%d" % (n.encode("ascii"), sz)
+                              for sz in (4, 8, 12, 16, 20, 24)]):
+                    try:
+                        addr = k32.GetProcAddress(base, cand)
+                    except Exception:
+                        addr = None
+                    if addr:
+                        found[n] = int(addr)
+                        break
+            if not all(n in found for n in
+                       InterceptionBackend._REQUIRED_EXPORTS):
+                # Second path: read the PE export table directly. Immune
+                # to any runtime hooking of the loader APIs.
+                return InterceptionBackend._scan_export_table(dll)
+            dll._plain_exports = found       # plain name -> abs address
+            dll._plain_image_base = base     # module load address
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _scan_export_table(dll):
+        # Parse the loaded image's IMAGE_EXPORT_DIRECTORY in memory.
+        # Maps every interception_* name (decorated or not) to its
+        # absolute address. Handles forwarded exports by resolving them
+        # through the target DLL.
         try:
             base = getattr(dll, "_handle", None)
             if not base:
@@ -296,38 +342,36 @@ class InterceptionBackend(object):
     def _install_plain_lookup(dll):
         # v8.52: bind plain names that ctypes' own GetProcAddress could
         # not find because the build exports them MSVC-decorated only.
-        # The scan (_abi1_names) knows the exact function addresses; we
-        # re-resolve through THIS module handle's GetProcAddress and cast
-        # to a real ctypes function pointer, then setattr it on the DLL
-        # object. ctypes WinDLL returns instance attributes before the
-        # dynamic lookup, so everything downstream (.argtypes/.restype
-        # assignment, byref(), Structure pointers) behaves exactly like a
-        # normally-loaded DLL. Undecorated (ABI-10) builds skip per name.
+        # The scan (_abi1_names / _scan_export_table) knows the exact
+        # function addresses; we bind them as ctypes callables and
+        # setattr() them on the DLL object. ctypes WinDLL returns
+        # instance attributes before the dynamic lookup, so everything
+        # downstream (.argtypes/.restype assignment, byref(), Structure
+        # pointers) behaves exactly like a normally-loaded DLL.
+        # Undecorated (cdecl/plain-export) builds skip per name.
         plain = getattr(dll, "_plain_exports", None)
         if not plain:
             return
         try:
-            base = getattr(dll, "_plain_image_base", 0) or 0
             clo = getattr(dll, "_plain_code_lo", 0) or 0
             chi = getattr(dll, "_plain_code_hi", 0) or 0
-            k32 = ctypes.windll.kernel32
-            k32.GetProcAddress.restype = ctypes.c_void_p
-            k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
             for short, va in plain.items():
                 if hasattr(dll, short):
                     continue      # plain GetProcAddress already works
-                # Preferred path: resolve through THIS module handle so
-                # ctypes fully owns the pointer (and validates it). Only
-                # if that fails do we fall back to the scanned VA, and we
-                # accept it only when it lies inside this image's bounds.
-                addr = k32.GetProcAddress(base, short.encode("ascii"))
-                if not addr:
-                    if not (clo <= va < chi):
-                        continue          # unvalidated - refuse to bind
-                    addr = va
-                if not addr:
+                # The official v1.0.1 library is __stdcall: cast with
+                # WINFUNCTYPE so the callee pops its arguments. A wrong
+                # calling convention here would corrupt the stack, so
+                # this must never be CFUNCTYPE for decorated stdcall
+                # builds. Addresses from the direct GetProcAddress probe
+                # carry no code-span bounds (clo==chi==0) - they came
+                # from the loader itself and are trusted; addresses from
+                # the PE-table scan are validated to lie inside the
+                # image's own export-address range first.
+                if clo and chi and not (clo <= va < chi):
+                    continue          # unvalidated - refuse to bind
+                if not va:
                     continue
-                f = ctypes.cast(addr, ctypes.CFUNCTYPE(ctypes.c_void_p))
+                f = ctypes.cast(va, ctypes.WINFUNCTYPE(ctypes.c_void_p))
                 setattr(dll, short, f)
         except Exception:
             pass
@@ -481,10 +525,18 @@ class InterceptionBackend(object):
             # v1.0.1 release DLL does not export it. Skip the fast path
             # when absent - the static-range walk below is the legacy
             # idiom and always works.
-            if not hasattr(self._dll, "interception_first_target_device"):
+            if getattr(self._dll, "interception_first_target_device",
+                       None) is None:
                 break
-            dev = self._dll.interception_first_target_device(
-                self._context, kind)
+            try:
+                self._dll.interception_first_target_device.argtypes = \
+                    [ctypes.c_void_p, ctypes.c_int]
+                self._dll.interception_first_target_device.restype = \
+                    ctypes.c_int
+                dev = self._dll.interception_first_target_device(
+                    self._context, kind)
+            except Exception:
+                break
             if dev > 0:
                 try:
                     self._dll.interception_set_filter(
