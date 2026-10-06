@@ -45,12 +45,24 @@ import time
 from core import IS_WINDOWS, log
 
 
+class _Timeout(Exception):
+    """Raised by _call_with_timeout when the callee never answered."""
+
+
 def _call_with_timeout(fn, timeout, *args):
-    """Run fn(*args) on a daemon thread; return its result, or None if it
-    has not answered within `timeout` seconds. The ctypes call itself is
-    never cancellable, so a wedged driver leaves one parked daemon
-    thread behind - harmless for a GUI process that would otherwise hang
-    at startup forever."""
+    """Run fn(*args) on a daemon thread; RETURN its result, or raise
+    _Timeout if it has not answered within `timeout` seconds.
+
+    v8.61: this used to signal a timeout by returning None - which is
+    indistinguishable from a function that legitimately answers "nothing
+    found". Our discovery walk returns None exactly that way, so every
+    empty answer was mis-reported as "device discovery did not return
+    within 8 s (driver installed but wedged)" even when the driver had
+    answered instantly and simply listed no mouse. Raising makes the two
+    cases impossible to confuse. The ctypes call itself is never
+    cancellable, so a genuinely wedged driver still leaves one parked
+    daemon thread behind - harmless for a GUI process that would
+    otherwise hang at startup forever."""
     box = {}
 
     def run():
@@ -63,7 +75,7 @@ def _call_with_timeout(fn, timeout, *args):
     t.start()
     t.join(timeout)
     if t.is_alive():
-        return None                   # timed out: driver did not answer
+        raise _Timeout("did not return within %.0f s" % timeout)
     if "error" in box:
         raise box["error"]
     return box.get("result")
@@ -118,7 +130,16 @@ class InterceptionBackend(object):
     _IS_MOUSE_MOVE = 1 << 7      # stroke carries x/y motion
     _IS_MOUSE_LEFT = 1 << 0      # stroke carries left-button state
     _FILTER_ALL = 0xFFFF
-    _INTERCEPTION_MAX_DEVICES = 10
+    # v8.62: Interception's handle space is 1..20, NOT 1..10. Handles
+    # 1..10 are HARDWARE (observer) devices - they receive real input;
+    # 11..20 are SOFTWARE (target) devices - the ones interception_send
+    # injects through. The official headers define INTERCEPTION_MAX_KEYBOARD
+    # / INTERCEPTION_MAX_MOUSE as 10 each per category, and working
+    # examples loop dev over 1..(2*max) checking is_mouse(dev). Probing
+    # only 1..10 missed every software mouse handle (11..20), which is
+    # why healthy installs reported "the driver lists no mouse".
+    _INTERCEPTION_HARDWARE_DEVICES = 10
+    _INTERCEPTION_MAX_DEVICES = 20
     _WHEEL_MS = 8                # tiny pause so scroll planes never
                                  # swallow wheel messages behind a burst
 
@@ -128,6 +149,7 @@ class InterceptionBackend(object):
         self._ctx = ctx              # optional pre-built context (tests)
         self._dll = None
         self._dev = None
+        self._shift = 0              # x2y-style mouse-move coalescing debt
         self._reason = ""            # why init failed (for honest logs)
         if ctx is not None:
             return                 # test double: nothing to load
@@ -147,10 +169,10 @@ class InterceptionBackend(object):
             # to the exe. A timed-out probe parks a harmless daemon
             # thread instead of parking the whole app.
             load = _call_with_timeout(self._load_dll, 8.0)
-            if load is None:
-                self._reason = ("loading interception.dll did not return "
-                                "within 8 s (kernel driver not answering "
-                                "at DLL-load time)")
+            if not load:
+                # legitimately "no DLL anywhere" (never a timeout -
+                # those raise _Timeout now): stay silent here and let
+                # make_input_backend() print the accurate one-liner.
                 self._degraded = True
                 return
             self._dll, frozen = load
@@ -167,23 +189,94 @@ class InterceptionBackend(object):
             ctx = _call_with_timeout(
                 self._dll.interception_create_context, 8.0)
             if not ctx:
-                self._reason = ("interception_create_context did not "
-                                "return within 8 s (the driver is "
-                                "installed but not answering - reinstall "
-                                "with 'interception.exe install' from an "
-                                "admin prompt and reboot)")
+                self._reason = ("interception_create_context returned no "
+                                "context - reinstall the driver with "
+                                "'interception.exe install' from an admin "
+                                "prompt and reboot")
                 self._degraded = True
                 return
             self._context = ctx
+            # v8.59: THE ORDERING BUG BEHIND "device discovery did not
+            # return within 8 s" on HEALTHY installs. Interception's ABI-1
+            # interception_wait()/interception_wait_with_timeout() do NOT
+            # merely poll - the FIRST call attaches the user-mode filter
+            # to every installed device, which requires each device to
+            # answer. An idle mouse answers nothing until real traffic
+            # arrives, so that first wait blocks for its whole timeout.
+            # Our old code called wait_with_timeout(ctx, 0.2) as a
+            # "wake-up" before the static-range walk; with PyInstaller's
+            # GIL switch interval (default 5 ms) the parked worker never
+            # got scheduled inside 8 s and _find_mouse timed out - even
+            # though the driver was perfectly alive (create_context had
+            # just succeeded). The official ABI-1 discovery idiom is the
+            # static-range walk of is_mouse(1..10), which reads the
+            # driver's installed-device TABLE and needs no device
+            # traffic at all. So: discover first; only wake devices via
+            # a short bounded wait if the table says there are none.
             found = _call_with_timeout(self._find_mouse, 8.0)
-            if found is None:
-                self._reason = ("device discovery did not return within "
-                                "8 s (driver installed but wedged)")
-                self._degraded = True
-                return
             self._dev = found
             if self._dev is None:
+                # Cold-boot / idle case: ask the driver to attach to the
+                # devices once (bounded), then re-walk the table. This
+                # runs on a daemon thread behind a timeout, so even a
+                # wedged wait here cannot park the GUI.
+                def _wake_and_walk():
+                    try:
+                        self._dll.interception_wait_with_timeout.argtypes = \
+                            [ctypes.c_void_p, ctypes.c_double]
+                        self._dll.interception_wait_with_timeout(
+                            self._context, 0.2)
+                    except Exception:
+                        pass
+                    return self._find_mouse()
+
+                try:
+                    self._dev = _call_with_timeout(_wake_and_walk, 4.0)
+                except _Timeout:
+                    self._dev = None
+            if self._dev is None:
+                # v8.61 DIAGNOSTIC PROBE: before blaming the driver's
+                # table, send one zero-effect stroke (type 0 = carries
+                # no button or motion state) to handle 1 and read the
+                # return value. This distinguishes "the library loaded
+                # but its handles never reached the kernel driver"
+                # (send returns 0 - e.g. a non-Interception DLL with
+                # same-named stub exports, or a driver whose control
+                # device could not be opened despite create_context
+                # succeeding) from "the driver answers but genuinely
+                # lists no mouse". Without this, both cases print the
+                # same message and users keep reinstalling a perfectly
+                # fine driver.
+                probe = "?"
+                try:
+                    st = self._STROKE()
+                    st.mouse.type = 0
+                    n = self._dll.interception_send(self._context, 1,
+                                                    ctypes.byref(st), 1)
+                    probe = ("interception_send(handle 1) returned %r"
+                             % (n,))
+                except Exception as exc:
+                    probe = "interception_send raised %r" % (exc,)
+                self._reason = ("the driver answered but reports no mouse "
+                                "device (is the mouse connected through a "
+                                "driver the filter does not see? probe: "
+                                "%s)" % probe)
+                log("Input: Interception found no mouse device. Probe: %s. "
+                    "If the probe says it returned 0, the loaded DLL is "
+                    "not really talking to the kernel driver - replace it "
+                    "with interception.dll from the official v1.0.1 "
+                    "archive (library/ folder). Using Windows injection."
+                    % probe)
                 self._degraded = True
+        except _Timeout as exc:
+            # v8.61: real timeouts now raise instead of returning None,
+            # so this branch can only mean a call genuinely hung - never
+            # a legitimate "nothing found" answer that used to be
+            # mislabelled "driver installed but wedged".
+            log("Input: Interception init timed out (%s); using Windows "
+                "injection instead." % (exc,))
+            self._reason = str(exc)
+            self._degraded = True
         except Exception as exc:
             log("Input: Interception init failed (%r); using Windows "
                 "injection instead." % (exc,))
@@ -479,14 +572,16 @@ class InterceptionBackend(object):
     def _load_dll_probe(cls):
         """Timeout-safe wrapper around _load_dll for callers that must
         never block (the GUI thread). Returns (dll_or_None, frozen);
-        (None, True) also means 'the load call itself hung'."""
+        (None, True) also means 'the load call itself hung'. v8.61:
+        timeouts now raise _Timeout instead of returning None, so the
+        two cases are told apart properly."""
         if not IS_WINDOWS:
             return None, False
-        out = _call_with_timeout(cls._load_dll, 8.0)
-        if out is None:
+        try:
+            return _call_with_timeout(cls._load_dll, 8.0)
+        except _Timeout:
             cls._loaded_path = getattr(cls, "_loaded_path", None)
             return None, True          # hung inside loader/DllMain
-        return out
 
     @classmethod
     def available(cls):
@@ -507,8 +602,11 @@ class InterceptionBackend(object):
             dll, frozen = cls._load_dll_probe()
             if dll is not None and not frozen:
                 dll.interception_create_context.restype = ctypes.c_void_p
-                ctx = _call_with_timeout(
-                    dll.interception_create_context, 6.0)
+                try:
+                    ctx = _call_with_timeout(
+                        dll.interception_create_context, 6.0)
+                except _Timeout:
+                    ctx = None
                 if ctx:
                     dll.interception_destroy_context.argtypes = \
                         [ctypes.c_void_p]
@@ -535,7 +633,10 @@ class InterceptionBackend(object):
                                     continue
                             return False
 
-                        ok = bool(_call_with_timeout(_walk, 6.0))
+                        try:
+                            ok = bool(_call_with_timeout(_walk, 6.0))
+                        except _Timeout:
+                            ok = False
                     else:
                         dll.interception_wait_with_timeout.restype = \
                             ctypes.c_int
@@ -610,44 +711,66 @@ class InterceptionBackend(object):
             dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
                                                     c.c_ushort]
 
+    def _query_table(self):
+        """v8.62 THE REAL BUG: we walked handles 1..10, but Interception
+        splits them in two ranges - 1..10 are HARDWARE (observer)
+        devices and 11..20 are SOFTWARE (target) devices. Every working
+        example shipped with the library (mx.c, send.c) iterates
+        INTERCEPTION_MAX_MOUSE = 20 and sends through the handle where
+        is_mouse() is TRUE IN THE 11..20 RANGE. Our old 1..10-only walk
+        therefore reported 'the driver lists no mouse' on perfectly
+        healthy installs: the kernel driver DID list the mouse, just at
+        handle 11+, above our blind window. That is exactly this user's
+        symptom ('driver answered, table lists no mouse', probe send to
+        handle 1 returning 1). Query both ranges."""
+        found = []                  # [(dev, is_mouse_bool), ...]
+        if not hasattr(self._dll, "interception_is_mouse"):
+            return found
+        is_mouse = self._dll.interception_is_mouse
+        is_mouse.argtypes = [ctypes.c_int]
+        is_mouse.restype = ctypes.c_int
+        for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+            try:
+                found.append((dev, bool(is_mouse(dev))))
+            except Exception:
+                continue
+        return found
+
     def _find_mouse(self):
-        # v8.50: first_target_device only reports devices that have ALREADY
-        # sent input since the context was created - a freshly booted or
-        # idle mouse makes it return 0 and the backend wrongly degraded to
-        # Win32 ("driver not installed" even though it was). Interception's
-        # own idiom is wait() with a short timeout, which also wakes idle
-        # devices; fall back to iterating the static device range 1..10.
-        try:
-            self._dll.interception_wait_with_timeout.argtypes = \
-                [ctypes.c_void_p, ctypes.c_double]
-            self._dll.interception_wait_with_timeout(self._context, 0.2)
-        except Exception:
-            pass
-        # v8.55: THE official ABI-1 discovery idiom is the static-range
-        # walk below (is_keyboard()/is_mouse() over handles 1..10) - it
-        # needs no device traffic at all, so it finds an idle mouse on a
-        # cold boot. Run it FIRST. The previous order relied on
-        # wait_with_timeout "waking" devices, but interception_wait()
-        # never enumerates anything by itself: on an untouched machine
-        # the walk ran only after the ABI-10 fast path (absent from the
-        # release DLL), while the wait-based probe timed out -> false
-        # "kernel driver did not answer" even with the driver installed.
-        if hasattr(self._dll, "interception_is_mouse") and \
-                not hasattr(self._dll, "interception_next_handle"):
-            is_mouse = self._dll.interception_is_mouse
-            is_mouse.argtypes = [ctypes.c_int]
-            is_mouse.restype = ctypes.c_int
-            for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+        # v8.60: EVERY branch of discovery is tried on EVERY build.
+        # v8.59 gated the static-range walk behind
+        # "has is_mouse AND NOT has next_handle", which assumed ABI-1
+        # and ABI-10 builds are mutually exclusive - they are not. A
+        # DLL that exports BOTH helper sets skipped the walk entirely,
+        # fell into the ABI-10 iteration path, and when that returned
+        # nothing died with "found no mouse target device" even though
+        # the plain 1..10 walk would have answered instantly. The
+        # ordering insight from v8.59 stands: NEVER open with a
+        # blocking wait (ABI-1's first wait attaches the filter to
+        # every device and blocks until real traffic arrives); wake-up
+        # happens only as a bounded fallback in __init__.
+        table = self._query_table()
+        # v8.62: prefer the SOFTWARE (target) half of the range, 11..20 -
+        # that is the handle official examples send strokes through.
+        for dev, kind in table:
+            if kind and dev > self._INTERCEPTION_HARDWARE_DEVICES:
                 try:
-                    if is_mouse(dev):
-                        try:
-                            self._dll.interception_set_filter(
-                                self._context, dev, self._FILTER_ALL)
-                        except Exception:
-                            pass
-                        return dev
+                    self._dll.interception_set_filter(
+                        self._context, dev, self._FILTER_ALL)
                 except Exception:
-                    continue
+                    pass
+                return dev
+        # Fall back to a hardware (observer) handle only if the software
+        # half listed nothing - sending there still works on some
+        # setups, and beats degrading outright.
+        for dev, kind in table:
+            if kind:
+                try:
+                    self._dll.interception_set_filter(
+                        self._context, dev, self._FILTER_ALL)
+                except Exception:
+                    pass
+                return dev
         for kind in (15, 14):     # MOUSE then MOUSE_ABSOLUTE
             # first_target_device is an ABI-10 helper; the official
             # v1.0.1 release DLL does not export it. Skip the fast path
@@ -695,28 +818,19 @@ class InterceptionBackend(object):
                             self._context, dev)
             except Exception:
                 pass
-        if hasattr(self._dll, "interception_is_mouse") and \
-                not hasattr(self._dll, "interception_next_handle"):
-            # v8.52: official v1.0.1 ABI-1 has no next_handle/first_device.
-            # Its documented idiom is simply walking the fixed handles
-            # 1..10 and asking is_keyboard()/is_mouse() per handle.
-            is_mouse = self._dll.interception_is_mouse
-            is_mouse.argtypes = [ctypes.c_int]
-            is_mouse.restype = ctypes.c_int
-            for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
-                try:
-                    if is_mouse(dev):
-                        try:
-                            self._dll.interception_set_filter(
-                                self._context, dev, self._FILTER_ALL)
-                        except Exception:
-                            pass
-                        return dev
-                except Exception:
-                    continue
-        log("Input: Interception found no mouse target device - is the "
-            "driver installed (interception.exe install + reboot)? "
-            "Using Windows injection.")
+        # v8.60: the static-range walk at the TOP of this function already
+        # covered every build that exports is_mouse(); there is nothing
+        # left to re-walk here. Reaching this point means BOTH the table
+        # walk and the ABI-10 iteration came up empty on a DLL whose
+        # create_context just succeeded - so the driver IS answering but
+        # genuinely reports no mouse through this context. The old tail
+        # duplicate of the walk (gated on "no next_handle") could never
+        # fire after the top walk ran: same inputs, same result.
+        log("Input: Interception found no mouse target device - the "
+            "driver answered but its device table lists no mouse. "
+            "Reinstall it ('interception.exe install' from an admin "
+            "prompt), reboot, and make sure the mouse is plugged in "
+            "before Snappy AI starts. Using Windows injection.")
         return None
 
     # -- contract ------------------------------------------------------
@@ -763,6 +877,18 @@ class InterceptionBackend(object):
         for _ in range(4):
             dx = max(-self._STEP, min(self._STEP, tx - cx))
             dy = max(-self._STEP, min(self._STEP, ty - cy))
+            # x2y-style coalescing debt: if the driver merged our last
+            # stroke with physical mouse motion, the cursor travelled
+            # FURTHER than requested. Repay that overshoot by shrinking
+            # (or zeroing) this stroke instead of adding to it. The debt
+            # is always opposite in sign to the requested direction.
+            sh = self._shift
+            if sh > 0 and dx < 0:
+                take = min(sh, -dx)
+                dx += take; self._shift -= take
+            elif sh < 0 and dx > 0:
+                take = min(-sh, dx)
+                dx -= take; self._shift += take
             s = self._STROKE()
             s.mouse.type = self._IS_MOUSE_MOVE
             s.mouse.x, s.mouse.y = dx, dy
@@ -772,10 +898,17 @@ class InterceptionBackend(object):
                 return
             time.sleep(0.001)
             try:
-                cx, cy = win32rt.get_cursor_pos()
+                nx, ny = win32rt.get_cursor_pos()
             except Exception:
                 self.note_failure("cursor read")
                 return
+            # detect coalescing on the axis we actually stroked: actual
+            # travel exceeded requested travel in the same direction
+            if dx:
+                real_dx = nx - cx
+                if (real_dx > 0) == (dx > 0) and abs(real_dx) > abs(dx):
+                    self._shift = real_dx - dx
+            cx, cy = nx, ny
             if (cx, cy) == (tx, ty):
                 break
         else:
@@ -798,7 +931,53 @@ class InterceptionBackend(object):
         self._send(s, "button")
         return self.ok_for_button()
 
+    def send_click(self):
+        """One complete synthetic click as a SINGLE two-stroke packet
+        (down+up delivered in one interception_send transaction), with a
+        randomized hold between the transitions. Borrowed from connorabs'
+        osu!mania pixel-trigger engine, which sends tap pairs atomically:
+        one kernel transaction means nothing interleaves between down and
+        up, and the driver's own queue paces the gap instead of Python
+        thread scheduling.
+
+        Returns True if the whole packet went out. False = backend
+        degraded (caller must hand BOTH events to Win32 itself - that is
+        exactly what assist._click does on False, so a mid-call failure
+        can never leave the logical button stuck)."""
+        import random
+        if not self.ok_for_button():
+            return False
+        d = self._STROKE()
+        d.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
+        d.mouse.buttons = 1
+        u = self._STROKE()
+        u.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
+        u.mouse.buttons = 0
+        pair = (self._STROKE * 2)(d, u)
+        ok = self._send_count(pair, 2, "click")
+        # human-ish visible hold so apps that poll button state register it
+        time.sleep(random.uniform(0.015, 0.035))
+        return ok
+
     # -- internals ------------------------------------------------------
+    def _send_count(self, strokes, count, what):
+        """Send `count` strokes in ONE interception_send transaction,
+        under the same lock _send uses."""
+        with self._lock:
+            if self._degraded or self._dev is None:
+                return False
+            try:
+                sent = self._dll.interception_send(
+                    self._context, self._dev,
+                    ctypes.cast(strokes, ctypes.c_void_p), count)
+            except Exception:
+                self.note_failure(what)
+                return False
+            if sent != count:
+                self.note_failure(what + " (partial)")
+                return False
+            return True
+
     def _send(self, stroke, what):
         """Deliver one stroke. Returns True on success. NEVER swallows a
         failure silently: any refused/errored send degrades the backend
