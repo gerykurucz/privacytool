@@ -3,3 +3,5 @@ app/__pycache__/
 SnappyAI.exe
 config.json
 interception.dll
+__pycache__/
+*.pyc
