@@ -6,3 +6,9 @@ __pycache__/
 SnappyAI.exe
 config.json
 interception.dll
+
+# Local-only secrets. Never commit these; they live outside the repo or in a
+# password manager. The values were already exposed once (2026-10-03 incident)
+# and must be rotated before any release build.
+docs/ALL-SECRETS.txt
+docs/NEW-SIGNING-KEY.txt
