@@ -7,8 +7,8 @@
 
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(8, 61, 0, 0),
-    prodvers=(8, 61, 0, 0),
+    filevers=(8, 62, 0, 0),
+    prodvers=(8, 62, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -24,12 +24,12 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'Snappy AI'),
             StringStruct(u'FileDescription', u'Snappy AI - accessibility click helper'),
-            StringStruct(u'FileVersion', u'8.61.0.0'),
+            StringStruct(u'FileVersion', u'8.62.0.0'),
             StringStruct(u'InternalName', u'SnappyAI'),
             StringStruct(u'LegalCopyright', u'Snappy AI - free software, no warranty'),
             StringStruct(u'OriginalFilename', u'SnappyAI.exe'),
             StringStruct(u'ProductName', u'Snappy AI'),
-            StringStruct(u'ProductVersion', u'8.61.0.0'),
+            StringStruct(u'ProductVersion', u'8.62.0.0'),
           ]
         )
       ]

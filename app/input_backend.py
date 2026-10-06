@@ -130,7 +130,16 @@ class InterceptionBackend(object):
     _IS_MOUSE_MOVE = 1 << 7      # stroke carries x/y motion
     _IS_MOUSE_LEFT = 1 << 0      # stroke carries left-button state
     _FILTER_ALL = 0xFFFF
-    _INTERCEPTION_MAX_DEVICES = 10
+    # v8.62: Interception's handle space is 1..20, NOT 1..10. Handles
+    # 1..10 are HARDWARE (observer) devices - they receive real input;
+    # 11..20 are SOFTWARE (target) devices - the ones interception_send
+    # injects through. The official headers define INTERCEPTION_MAX_KEYBOARD
+    # / INTERCEPTION_MAX_MOUSE as 10 each per category, and working
+    # examples loop dev over 1..(2*max) checking is_mouse(dev). Probing
+    # only 1..10 missed every software mouse handle (11..20), which is
+    # why healthy installs reported "the driver lists no mouse".
+    _INTERCEPTION_HARDWARE_DEVICES = 10
+    _INTERCEPTION_MAX_DEVICES = 20
     _WHEEL_MS = 8                # tiny pause so scroll planes never
                                  # swallow wheel messages behind a burst
 
@@ -701,6 +710,31 @@ class InterceptionBackend(object):
             dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
                                                     c.c_ushort]
 
+    def _query_table(self):
+        """v8.62 THE REAL BUG: we walked handles 1..10, but Interception
+        splits them in two ranges - 1..10 are HARDWARE (observer)
+        devices and 11..20 are SOFTWARE (target) devices. Every working
+        example shipped with the library (mx.c, send.c) iterates
+        INTERCEPTION_MAX_MOUSE = 20 and sends through the handle where
+        is_mouse() is TRUE IN THE 11..20 RANGE. Our old 1..10-only walk
+        therefore reported 'the driver lists no mouse' on perfectly
+        healthy installs: the kernel driver DID list the mouse, just at
+        handle 11+, above our blind window. That is exactly this user's
+        symptom ('driver answered, table lists no mouse', probe send to
+        handle 1 returning 1). Query both ranges."""
+        found = []                  # [(dev, is_mouse_bool), ...]
+        if not hasattr(self._dll, "interception_is_mouse"):
+            return found
+        is_mouse = self._dll.interception_is_mouse
+        is_mouse.argtypes = [ctypes.c_int]
+        is_mouse.restype = ctypes.c_int
+        for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+            try:
+                found.append((dev, bool(is_mouse(dev))))
+            except Exception:
+                continue
+        return found
+
     def _find_mouse(self):
         # v8.60: EVERY branch of discovery is tried on EVERY build.
         # v8.59 gated the static-range walk behind
@@ -714,25 +748,28 @@ class InterceptionBackend(object):
         # blocking wait (ABI-1's first wait attaches the filter to
         # every device and blocks until real traffic arrives); wake-up
         # happens only as a bounded fallback in __init__.
-        if hasattr(self._dll, "interception_is_mouse"):
-            # Official ABI-1 idiom: walk the fixed handles 1..10 and ask
-            # is_mouse(). Reads the driver's installed-device TABLE;
-            # needs no device traffic, so an idle mouse on a cold boot
-            # still counts. Try FIRST on every build that exports it.
-            is_mouse = self._dll.interception_is_mouse
-            is_mouse.argtypes = [ctypes.c_int]
-            is_mouse.restype = ctypes.c_int
-            for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+        table = self._query_table()
+        # v8.62: prefer the SOFTWARE (target) half of the range, 11..20 -
+        # that is the handle official examples send strokes through.
+        for dev, kind in table:
+            if kind and dev > self._INTERCEPTION_HARDWARE_DEVICES:
                 try:
-                    if is_mouse(dev):
-                        try:
-                            self._dll.interception_set_filter(
-                                self._context, dev, self._FILTER_ALL)
-                        except Exception:
-                            pass
-                        return dev
+                    self._dll.interception_set_filter(
+                        self._context, dev, self._FILTER_ALL)
                 except Exception:
-                    continue
+                    pass
+                return dev
+        # Fall back to a hardware (observer) handle only if the software
+        # half listed nothing - sending there still works on some
+        # setups, and beats degrading outright.
+        for dev, kind in table:
+            if kind:
+                try:
+                    self._dll.interception_set_filter(
+                        self._context, dev, self._FILTER_ALL)
+                except Exception:
+                    pass
+                return dev
         for kind in (15, 14):     # MOUSE then MOUSE_ABSOLUTE
             # first_target_device is an ABI-10 helper; the official
             # v1.0.1 release DLL does not export it. Skip the fast path
