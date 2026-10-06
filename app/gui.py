@@ -495,6 +495,32 @@ META = {
                        "or items in the same place win ties for a "
                        "while - handy for scrollbars and repeated "
                        "clicks on one control.", "bool", None),
+    "watch_center_only": ("Watch the screen centre only",
+                          "For fixed layouts where the items never "
+                          "move: assistance ignores where your cursor "
+                          "is and always looks inside a square at the "
+                          "middle of the screen - as wide as your "
+                          "\"search distance\" setting (150 px by "
+                          "default). Clicks outside that square pass "
+                          "through completely untouched, like empty "
+                          "space. Off (default): the usual cursor-"
+                          "anchored search.",
+                          "bool", None),
+    "center_follow": ("Keep the cursor on it",
+                      "Needs \"Watch the screen centre only\" on. Once "
+                      "an item inside the watched square is picked - "
+                      "by your click, or by resting the cursor on it - "
+                      "the cursor stays parked on it and keeps following "
+                      "it even while the item moves (a scrolling plane, "
+                      "an animated panel). No colour needed: without "
+                      "\"My colour(s)\" set it locks straight onto the "
+                      "best high-contrast item; with a colour set it "
+                      "waits for the brief dwell first. It never fights "
+                      "you: holding any mouse button pauses it, and it "
+                      "lets go about a second after the item "
+                      "disappears. Turn on \"Lead moving items\" as "
+                      "well for smooth fast chasing.",
+                      "bool", None),
     "follow_learn": ("What the memory may learn",
                      "Only items in my colour: a misclick that snapped "
                      "somewhere else cannot retarget the memory. Every "
@@ -559,6 +585,27 @@ META = {
                                  "Desktop, VMs)", "mss"),
                                 ("Windows Graphics Capture - "
                                  "experimental", "wgc"))),
+    # v8.50: click DELIVERY backend - the opt-in Interception option.
+    # The dropdown shows availability in its own label; assist.py falls
+    # back to win32 with a log line if the driver is missing, so an
+    # unavailable choice can never eat a click.
+    "input_backend": ("Click delivery method",
+                      "How your assisted clicks reach the screen. "
+                      "Standard works everywhere with nothing to "
+                      "install and is what almost everyone should "
+                      "keep. Driver level sends clicks through the "
+                      "Interception kernel driver instead, for the "
+                      "few games that ignore normal synthetic clicks "
+                      "- it needs interception.dll next to Snappy AI "
+                      "and the driver installed (run interception.exe "
+                      "install as administrator, then reboot). If "
+                      "either is missing, Snappy AI says so once and "
+                      "keeps working the standard way. Applies on "
+                      "restart.",
+                      "map", (("Standard Windows method", "win32"),
+                              ("Driver level (Interception) - for "
+                               "games that ignore synthetic clicks",
+                               "interception"))),
     # v8.49: the three detection knobs have a documented precedence that
     # was invisible here. "Auto-adjust for dim screens" may only LOWER the
     # bar, and it stands aside entirely once you raise either number above
@@ -649,28 +696,35 @@ META = {
     # v8.48: auto-click. The ONLY setting in the product that makes the
     # app act with no gesture from the user, so its label leads with the
     # consequence ("clicks on its own") rather than the mechanism.
-    "auto_click": ("Click my colour by itself",
-                   "The screen is scanned by itself and the best item in "
-                   "YOUR colour is clicked, without you clicking "
-                   "anything. Needs 'My colour(s)' to be set - without "
-                   "one there is nothing to aim at, so it waits quietly "
-                   "until you set one. It never clicks while paused, "
-                   "never clicks "
-                   "Snappy AI's own windows, never clicks a colour on "
-                   "the Never-click list, and stops at the limit below. "
-                   "Turn this on only where you want it, and press Pause "
-                   "at any time to take the mouse back.",
+    "auto_click": ("Click items by itself",
+                   "Scans the screen centre on its own and clicks the "
+                   "best item - no click from you needed; turning this "
+                   "on IS the request. With 'My colour(s)' set it "
+                   "clicks only items in your colour; without a colour "
+                   "it clicks the highest-contrast item instead (raise "
+                   "'How crisp an auto-click target must be' if it "
+                   "picks too eagerly). Never while paused, never on "
+                   "Snappy AI's own windows, never on a Never-click "
+                   "colour, and it stops at the limit below. Press "
+                   "Pause any time to take the mouse back.",
                    "bool", None),
     "auto_click_interval": ("Seconds between auto-clicks",
-                            "How often the screen is checked for your "
-                            "colour (0.5-60). A slow number is the safe "
-                            "one: 2-5 suits a dialog you are watching.",
+                            "How often the screen centre is re-checked "
+                            "(0.1-60). The default 0.1 s = ten looks a "
+                            "second, so a fresh item is clicked almost "
+                            "as soon as it appears; the same-spot guard "
+                            "and the pause-before-click keep it from "
+                            "hammering one control. Raise it to 2-5 for "
+                            "a calmer pace.",
                             "float", None),
     "auto_click_min_contrast": ("How crisp an auto-click target must be",
                                 "On the same scale as 'Minimum edge "
-                                "strength'. Start at the default and raise "
-                                "it if it clicks the wrong thing: only "
-                                "strong, clearly drawn items will qualify.",
+                                "strength'. This gate matters MOST when "
+                                "no colour is set: with colour-free "
+                                "auto-clicking only items above this "
+                                "crispness are eligible. Start at the "
+                                "default and raise it if it clicks the "
+                                "wrong thing.",
                                 "int", None),
     "auto_click_max_clicks": ("Auto-click limit per session",
                               "How many times it may click on its own "
@@ -746,6 +800,8 @@ for _i in range(1, REC_PLAY_SLOTS + 1):
 # its hotkeys, theme with the header switch, the rest are deployment.)
 TAB_ASSIST = ["block_bound_keys", "hold_follow", "rapid_click_snap",
               "follow_enabled", "motion_predict", "motion_3d",
+              "watch_center_only",
+              "center_follow",
               "accent_only",
               "adaptive_threshold", "luminance_norm",
               "color_adapt", "accent_variants", "accent_coherent",
@@ -859,27 +915,19 @@ PROSE = {
     "note.colors":
         "The two lists at the top choose which colours Snappy AI "
         "prefers or refuses. Each shows its colours as boxes on the "
-        "right, fifteen at most, and clicking a box removes that "
-        "colour again; an empty list shows a crossed-out box and "
-        "counts as off. 'Add to preferred colours' and 'Add to "
-        "refused colours' put the colour standing in the picker into "
-        "the matching list. Current RGB Value shows three boxes - "
-        "each as wide as five colour boxes, so the row spans the same "
-        "fifteen boxes as everything below - that glow with how much "
-        "red, green and blue the colour in the picker holds; the row "
-        "follows the picker and cannot be typed into. The picker "
-        "below mixes a colour like a paint program; everything beside "
-        "it sits on the right side of the window, with the same gap "
-        "to the edge as the settings above, and every row spans the "
-        "same fifteen-box width: the tall showcase with its #value "
-        "drawn inside, then the fifteen preset swatches, the two add "
-        "buttons, and the screen row - 'Pick color from screen' takes "
-        "the single colour under the cursor, 'Suggest colors from "
-        "screen' fills fifteen boxes of its own with colours it finds "
-        "around the cursor, and clicking one of them loads it into "
-        "the picker. The showcase is tall on purpose: it lets the "
-        "suggestion boxes end exactly level with the colour slider on "
-        "the left.",
+        "right, fifteen at most; clicking a box removes that colour "
+        "again, and an empty list shows a crossed-out box and counts "
+        "as off. 'Add to preferred colours' and 'Add to refused "
+        "colours' put the colour standing in the picker into the "
+        "matching list. 'Current RGB Value' is three glow boxes - "
+        "brighter means more red, green or blue in the picked colour; "
+        "it follows the picker and cannot be typed into. The picker "
+        "mixes a colour like a paint program. Beside it: fifteen "
+        "preset swatches load a colour into the picker; 'Pick color "
+        "from screen' takes the single colour under the cursor (after "
+        "a 3 s countdown); 'Suggest colors from screen' fills a row "
+        "with the main UI colours found around the cursor - click one "
+        "to load it into the picker.",
     # v8.42: the read-only R,G,B row under the two colour lists.
     # v8.43: its three boxes are no longer numbers - each one glows
     # with how much of its channel the picked colour holds.
@@ -1087,8 +1135,10 @@ PROSE = {
                    "login automatically.",
     "gate.btn.monthly": "Monthly Subscription for 9.99\u20ac",
     "gate.btn.trial": "Trial Purchase for 1.99\u20ac",
-    "gate.btn.recheck": "Re-check now",
-    "gate.btn.activate": "I paid - activate now",
+    # gate.btn.recheck / gate.btn.activate (the manual "Re-check now"
+    # and "I paid - activate now" buttons) are gone: the gate re-checks
+    # by itself every 30 seconds, so no key is registered for them in
+    # any locale.
     "gate.note": "The engine starts as soon as the subscription is "
                  "active - this window re-checks by itself every 30 "
                  "seconds. Closing it returns to sign-in.",
@@ -1122,20 +1172,16 @@ PROSE = {
         "Pay with THIS Discord e-mail - a purchase on any other address "
         "cannot activate it.",
     "gate.msg.checking": "Checking with the server...",
-    "gate.msg.open_ok": "Stripe is open in your browser - pay there, "
-                        "then press Re-check (or 'I paid - activate "
-                        "now').",
+    "gate.msg.open_ok": "Stripe is open in your browser - pay there. "
+                        "This window notices the payment by itself and "
+                        "starts the engine.",
     "gate.msg.open_fail": "Could not open a browser. Open this link by "
                           "hand:\n%s",
     "gate.msg.no_link": "That payment link is not configured on this "
                         "build.",
-    "gate.msg.dispatching": "Asking the publisher to run now...",
-    "gate.msg.no_dispatch": "Dispatch not configured - activation "
-                            "follows the publisher cron (a few "
-                            "minutes). This window keeps re-checking "
-                            "by itself.",
-    "gate.msg.not_live": "Not live yet - this window keeps re-checking "
-                         "by itself every 30 seconds.",
+    # gate.msg.dispatching / gate.msg.no_dispatch / gate.msg.not_live
+    # belonged to the removed "I paid - activate now" flow; the 30 s
+    # auto re-check covers activation, so no locale registers them.
     "gate.msg.unreachable": "Auth server unreachable: %s",
     "gate.msg.session_gone": "Session gone - sign in again.",
     "gate.msg.active": "Subscription active - starting Snappy AI...",
@@ -2606,27 +2652,42 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     desc_row.pack(fill="x", padx=10)
 
     desc_var = tk.StringVar(value=i18n.L("desc.default"))
+    # v8.51: multi-line bar. A single-line label wrapped only as far
+    # as the window grew tall; long descriptions (and longer
+    # translations) were clipped outright - "fully visible" now means
+    # the bar takes up to five lines and GROWS its own height, so no
+    # setting's text is ever cut off.
     desc_bar = tk.Label(desc_row, textvariable=desc_var, font=F_DESC,
                         bg=pal["desc_bg"], fg=pal["muted"], anchor="w",
                         justify="left", padx=12, pady=6, wraplength=660)
     kit.reg(desc_bar, "desc")
     desc_bar.pack(side="left", fill="both", expand=True)
 
-    def _desc_fit(_event=None):
-        """A translation can be much longer than the English; a fixed
-        wraplength would clip it on a narrow window, so re-fit to the
-        row's live width (v8.40)."""
+    DESC_MAX_LINES = 5          # normal hover texts fit well inside
+    DESC_MAX_CHARS = 1900       # absolute ceiling for huge locales
+
+    def _desc_height(_event=None):
+        """Fit the bar's own line count to the CURRENT text at the
+        CURRENT width - never more than DESC_MAX_LINES, so one long
+        description cannot push the tabs off a small screen."""
         try:
             w = desc_row.winfo_width()
             if w > 80:
                 want = max(160, w - 24)
                 if str(desc_bar.cget("wraplength")) != str(want):
                     desc_bar.configure(wraplength=want)
+                txt = desc_var.get()
+                lines = 0
+                for para in txt.split("\n"):
+                    lines += max(1, len(para) // int(want * 0.92) + 1)
+                want_h = min(DESC_MAX_LINES, max(2, lines))
+                if int(desc_bar.cget("height")) != want_h:
+                    desc_bar.configure(height=want_h)
         except tk.TclError:
             pass
 
-    desc_row.bind("<Configure>", _desc_fit)
-    _desc_fit()
+    desc_row.bind("<Configure>", _desc_height)
+    _desc_height()
 
     # v8.40: the description bar remembers WHERE its current text came
     # from, so a language switch can re-translate it in place.  Without
@@ -2640,12 +2701,14 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         for the default hint."""
         desc_src[0] = fn
         desc_var.set(fn() if fn else i18n.L("desc.default"))
+        _desc_height()
 
     def _redesc():
         if not _live(desc_bar):
             return False
         desc_var.set(desc_src[0]() if desc_src[0]
                      else i18n.L("desc.default"))
+        _desc_height()
         return True
 
     R(_redesc)
@@ -2960,6 +3023,40 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 return True
 
             R(_revals)
+
+            if key == "input_backend":
+                # v8.50: tell the truth about the driver option up
+                # front. Interception needs a DLL AND a kernel driver;
+                # when either is missing the choice still works (the
+                # engine falls back to the standard method with one
+                # log line), but the user must see that it is NOT
+                # active before picking it. The probe runs in a worker
+                # thread because creating an Interception context can
+                # block briefly while the driver loads.
+                note = tk.Label(cell, text="", font=F_DESC,
+                                bg=pal["card"], fg=pal["muted"],
+                                anchor="e", justify="right")
+                kit.reg(note, "card_muted")
+                note.grid(row=1, column=0, columnspan=2, sticky="e")
+
+                def _avail_probe(txt=note):
+                    try:
+                        from input_backend import InterceptionBackend
+                        ok = InterceptionBackend.available()
+                    except Exception:
+                        ok = False
+                    def _paint(ok=ok, txt=txt):
+                        if not _live(txt):
+                            return False
+                        txt.configure(text=(
+                            "Interception detected - ready to use."
+                            if ok else
+                            "Not installed here: picking this keeps "
+                            "the standard Windows method."))
+                        return True
+                    R(_paint)
+
+                threading.Thread(target=_avail_probe, daemon=True).start()
         elif kind == "colors":
             # v8.43: a colour-list row is SEEN, not read - the value
             # side is a strip of colour boxes (same look as the preset
@@ -4421,7 +4518,10 @@ def _gate_window(cfg, kit, identity, ent):
     payment buttons ("Monthly
     Subscription for 9.99 EUR" and "Trial Purchase for 1.99 EUR" -
     each checkout binds to the PAID e-mail, which must be this
-    Discord e-mail) and a re-check button. Returns True once the
+    Discord e-mail). No manual re-check or activation buttons: the
+    window re-checks the subscription by itself every 30 seconds
+    (auto_loop), so a fresh purchase starts the engine without any
+    click. Returns True once the
     worker reports an active entitlement; False when the window was
     closed. The engine is never started while this window exists.
     v8.47 dropped the blurred-logo backdrop: its red blotches showed
@@ -4574,45 +4674,16 @@ def _gate_window(cfg, kit, identity, ent):
         else:
             set_msg(i18n.L("gate.msg.open_fail", url))
 
-    def activate_now():
-        """'I paid - activate now': dispatch the publisher through
-        repository_dispatch and re-check with a short backoff, so a
-        fresh purchase activates in seconds instead of at the next
-        cron tick."""
-        set_msg(i18n.L("gate.msg.dispatching"))
-
-        def worker():
-            sent = online.dispatch_publish(cfg)
-            if not sent:
-                root.after(0, lambda: set_msg(
-                    i18n.L("gate.msg.no_dispatch")))
-                return
-            for delay in (5, 10, 20, 40):
-                time.sleep(delay)
-                try:
-                    # the user is actively waiting on a just-dispatched
-                    # publish: bypass the CDN bucket every time
-                    ident, ent_now = online.me(cfg, fresh=True)
-                except online.OnlineError:
-                    continue
-                if ident and online.entitlement_active(ent_now) \
-                        and not ent_now.get("shared"):
-                    root.after(0, lambda: checked(ident, ent_now, None))
-                    return
-            root.after(0, lambda: set_msg(
-                i18n.L("gate.msg.not_live")))
-        threading.Thread(target=worker, daemon=True,
-                         name="activate-now").start()
-
-    def do_recheck(_event=None, silent=False):
-        if not silent:
-            set_msg(i18n.L("gate.msg.checking"))
-
+    def do_recheck(_event=None, silent=True):
+        """Silent entitlement re-check. The gate has no buttons any
+        more - auto_loop drives this every 30 seconds, so a finished
+        payment starts the engine without a click (_event may still be
+        a Tk event object)."""
         def worker():
             try:
-                # an explicit click bypasses the CDN bucket; the silent
-                # 30 s auto re-check shares it with everyone else
-                ident, ent_now = online.me(cfg, fresh=not silent)
+                # the silent 30 s auto re-check shares the CDN bucket
+                # with everyone else
+                ident, ent_now = online.me(cfg, fresh=False)
                 err = None
             except online.OnlineError as exc:
                 ident, ent_now, err = None, None, str(exc)
@@ -4632,8 +4703,8 @@ def _gate_window(cfg, kit, identity, ent):
         ent_cur[0] = ent_now
         h1.configure(text=head_for(ent_now))
         sum_lbl.configure(text=online.entitlement_summary(ent_now))
-        # `shared` is part of the gate, exactly as it is in run_gui,
-        # activate_now() and both console paths. Testing only
+        # `shared` is part of the gate, exactly as it is in run_gui
+        # and both console paths. Testing only
         # entitlement_active() here let an ACTIVE-BUT-SHARED account
         # through on the 30 s auto re-check - the window said
         # "Subscription active - starting Snappy AI..." while its own
@@ -4663,8 +4734,6 @@ def _gate_window(cfg, kit, identity, ent):
         note.configure(text=i18n.L("gate.note"))
         kit.set_text(sub_btn, i18n.L("gate.btn.monthly"))
         kit.set_text(tri_btn, i18n.L("gate.btn.trial"))
-        kit.set_text(chk_btn, i18n.L("gate.btn.recheck"))
-        kit.set_text(act_btn, i18n.L("gate.btn.activate"))
         kit.set_text(_g_lang, i18n.L(
             "btn.language", i18n.native_name(i18n.current())))
         refit()          # v8.47: new text, new card size, new frame
@@ -4684,25 +4753,18 @@ def _gate_window(cfg, kit, identity, ent):
                          kind="green", big=True)
     tri_btn.pack(pady=(0, 6))
     pay_btns.append(tri_btn)
-    # v8.49: created from the catalog, not from a literal. _gate_retext()
-    # already re-worded this button from gate.btn.recheck, so a German user
-    # saw "Re-check now" on the subscription gate until they happened to
-    # switch language - an English button in the highest-stakes window in
-    # the product.
-    chk_btn = kit.button(box, i18n.L("gate.btn.recheck"), do_recheck,
-                         kind="amber", big=True)
-    chk_btn.pack(pady=(0, 6))
-    act_btn = kit.button(box, i18n.L("gate.btn.activate"), activate_now)
-    act_btn.pack(pady=(0, 6))
+    # The manual "Re-check now" and "I paid - activate now" buttons
+    # are gone: auto_loop below re-checks the entitlement silently
+    # every 30 seconds, so a finished payment starts the engine
+    # without any click.
 
     _g_lang = kit.button(box, i18n.L(
         "btn.language", i18n.native_name(i18n.current())),
         lambda: _language_window(cfg, kit, root))
     _g_lang.pack(pady=(0, 6))
     root.update_idletasks()
-    bw = max([b.winfo_width() for b in pay_btns] +
-             [chk_btn.winfo_width(), 300])
-    for b in pay_btns + [chk_btn]:
+    bw = max([b.winfo_width() for b in pay_btns] + [300])
+    for b in pay_btns:
         meta = getattr(b, "_rmeta", None)
         if meta and HAVE_PIL and bw > 10:
             text, big, surface, _w, h, role = meta

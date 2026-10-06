@@ -1,7 +1,15 @@
 import win32api
+import time
 
 
 class Snap:
+    # Smoothing time constant in seconds: the EMA weight is derived from
+    # the real frame delta, so behavior no longer changes with refresh rate.
+    SMOOTH_TAU = 0.05
+    # When no target is visible, decay the last move toward zero at this
+    # rate (1/s) instead of retaining it - prevents drift-then-freeze.
+    DECAY_RATE = 8.0
+
     def __init__(self, config):
         self.cfg = config
         self.move_x, self.move_y = (0, 0)
@@ -27,16 +35,42 @@ class Snap:
             return True
         return any(win32api.GetAsyncKeyState(key) < 0 for key in self.cfg.focus_keys)
 
-    def calculate_focus(self, state, target):
-        if not state or target is None:
+    def calculate_focus(self, state, target, delta_time=0.0):
+        """Time-aware smoothing (ported from the main app's approach).
+
+        The old fixed EMA weight made the response depend on frame rate;
+        deriving alpha from delta_time keeps feel identical at 60/144 Hz.
+        On a lost target the stored move now decays toward zero instead
+        of being retained and re-applied when the next blob appears.
+        """
+        if not state:
+            return
+
+        if delta_time <= 0:
+            delta_time = 1.0 / 60.0
+
+        if target is None:
+            # Decay smoothly to a stop rather than freezing mid-motion.
+            k = max(0.0, 1.0 - self.DECAY_RATE * delta_time)
+            self.previous_x *= k
+            self.previous_y *= k
+            self.move_x, self.move_y = self.previous_x, self.previous_y
             return
 
         x, y = target
         x *= self.cfg.speed
         y *= self.cfg.speed * self.cfg.y_speed_multiplier
 
-        x = (1 - self.cfg.focus_smoothing_factor) * self.previous_x + self.cfg.focus_smoothing_factor * x
-        y = (1 - self.cfg.focus_smoothing_factor) * self.previous_y + self.cfg.focus_smoothing_factor * y
+        cfg_factor = self.cfg.focus_smoothing_factor
+        if cfg_factor > 0:
+            tau = -delta_time / (cfg_factor - 1.0)      # map config factor to a time constant
+            alpha = 1.0 - pow(2.718281828459045, -delta_time / tau)
+        else:
+            alpha = 1.0
+        alpha = min(max(alpha, 0.0), 1.0)
+
+        x = (1 - alpha) * self.previous_x + alpha * x
+        y = (1 - alpha) * self.previous_y + alpha * y
 
         self.previous_x, self.previous_y = (x, y)
         self.move_x, self.move_y = (x, y)

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+SnappyAI.exe
+config.json
+
+__pycache__/
+*.pyc

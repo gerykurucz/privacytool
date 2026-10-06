@@ -462,8 +462,15 @@ class FollowMemory(object):
         """
         Build the tuple scan_region consumes, in region coordinates:
         (sig_hsv, mem_x, mem_y, decay 0..1). None when expired/empty.
+
+        A memory with no colour signature still counts: sig=None makes
+        the colour-sim branch of the boost inert (it can never match),
+        but the POSITION branch - "the same control, different state" -
+        is exactly what a contrast-only session needs. Dropping the
+        whole context here would silently kill position persistence for
+        every user who never configured an accent colour.
         """
-        if self.sig is None or self.when <= 0.0:
+        if self.when <= 0.0:
             return None
 
         age = time.perf_counter() - self.when
@@ -1945,7 +1952,8 @@ def _is_clipped(Y0, X0, bw, bh, w, h, edge_flags):
 
 
 
-def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None):
+def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
+                deadline_ms=None):
     """
     Look for the best click-assist target near the cursor.
 
@@ -1965,11 +1973,21 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None):
         region are true screen edges. Items at a screen edge get relaxed
         shape limits (scrollbar thumbs are long and thin by nature) and
         are not treated as clipped.
+    deadline_ms:
+        Scan budget in milliseconds. None reads scan_budget_ms from the
+        settings (default 350 ms); callers that already bound their own
+        latency can pass an explicit value.
 
     Returns ScanResult.
     """
+    if deadline_ms is None:
+        try:
+            deadline_ms = float(cfgv.get("scan_budget_ms", 350))
+        except Exception:
+            deadline_ms = 350.0
+    deadline_ms = min(max(deadline_ms, 60.0), 2000.0)
     t0 = time.perf_counter()
-    deadline = t0 + 0.12
+    deadline = t0 + deadline_ms / 1000.0
 
     a = img.astype(np.float32)
     h, w = a.shape[:2]
@@ -2348,7 +2366,7 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None):
             for cand in candidates:
                 sim = 0.0
 
-                if time.perf_counter() <= deadline:
+                if sig is not None and time.perf_counter() <= deadline:
                     # Follow-memory colour sim stays classic (no soft
                     # credit): the remembered EXACT colour must beat its
                     # own hover/theme variants; the position bonus
@@ -2356,6 +2374,10 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None):
                     # It still gets the subsample speedup and the
                     # coherent-blob gate - dither speckle must never
                     # re-acquire a memory.
+                    # sig None = a position-only memory (contrast-only
+                    # session): the colour branch is inert by definition,
+                    # so it is skipped rather than fed a [None] accents
+                    # list (which would crash _accent_stats).
                     frac = _accent_fraction(img, cand[3], cand[2], cand[1],
                                             [sig], FOLLOW_COLOR_TOL,
                                             coherent=coherent)

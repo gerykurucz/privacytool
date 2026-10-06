@@ -101,9 +101,29 @@ DEFAULT_CONFIG = {
     "luminance_norm": True,
 
     # Screen capture backend.
-    # "auto"  = prefer dxcam (Desktop Duplication), fall back to mss.
-    # "dxcam" / "mss" = force one library (mss always remains as fallback).
+    # "auto"  = mss (GDI) first - it sees every ordinary window,
+    #           including games and hardware-accelerated apps that
+    #           Desktop Duplication cannot observe. (v8.52: auto used
+    #           to prefer dxcam; stale/black frames in live tests were
+    #           the result.)
+    # "dxcam" = force Desktop Duplication - fastest grabs, but blind to
+    #           some game/fullscreen swapchains; mss stays as fallback.
+    # "mss"   / "wgc" = force GDI / Windows.Graphics.Capture.
     "capture_backend": "auto",
+
+    # Click DELIVERY backend (v8.50). Opt-in secondary option:
+    # "win32" (default) injects through SendInput - no driver, works
+    # out of the box, and our own hooks recognise the events as
+    # injected so assistance never feeds itself.
+    # "interception" delivers clicks at the DRIVER level through the
+    # Interception library (github.com/oblitum/Interception) for the
+    # minority of games and Raw-Input apps that ignore synthetic
+    # events. It needs interception.dll beside the app AND the signed
+    # kernel driver installed (interception.exe install, then reboot).
+    # If either is missing the app says so once and keeps working
+    # through the standard Windows method - a half-installed setup can
+    # never eat a click. Applies on restart.
+    "input_backend": "win32",
 
     # Detected pieces whose bounding boxes are within this many pixels of
     # each other are merged into a single item. This rescues broken
@@ -166,6 +186,32 @@ DEFAULT_CONFIG = {
     "motion_predict": False,
     "motion_lead_ms": 50,
 
+    # Watch the screen centre only: when true, every scan is anchored
+    # at the middle of the virtual screen instead of under the cursor -
+    # for fixed-position layouts (kiosks, TV guides, one app filling the
+    # window) where the items never move. The search radius stays as set
+    # on Advanced; a click far outside that area simply passes through
+    # unassisted, like any empty space. Off = the classic cursor-anchored
+    # behaviour, bit-for-bit.
+    "watch_center_only": False,
+
+    # "Keep the cursor on it" (centre-watch follow). Only ever acts while
+    # watch_center_only is ON: after an item inside the watched square
+    # was picked (a click that snapped to it, or resting the cursor on
+    # it for ~0.3 s), the cursor stays parked on that item and chases it
+    # while it moves - scroll planes, animated panels, moving targets.
+    # It never fights the user: any held button or active follow-lock
+    # pauses it, and it dies ~1 s after the item stops being sighted.
+    # Combine with "Lead moving items" for smooth fast chasing.
+    "center_follow": False,
+
+    # Colour-stage scan budget in milliseconds (vision.scan_region).
+    # Items whose colour could not be checked before this deadline fail
+    # closed for accent_only/exclude_color and are reported in the log.
+    # 350 ms is generous enough that a radius-400 busy screen finishes
+    # scoring; lower it (min 60) if scans ever feel late on slow machines.
+    "scan_budget_ms": 350,
+
     # 3D snap follower: track position AND scale with a Kalman filter
     # instead of the legacy linear fit. Outliers are rejected per scan
     # (one bad frame damps the step instead of blinding the track),
@@ -184,17 +230,17 @@ DEFAULT_CONFIG = {
     # command "a" toggles this at runtime.
     "accent_only": False,
 
-    # Auto-click ("click the blue thing for me"): the ONLY feature that
-    # acts without a user gesture. The engine periodically scans the
-    # middle of the screen for items that contain your accent colour and
-    # clear a contrast gate, moves the cursor there and clicks it.
+    # Auto-click ("click the buttons for me"): the ONLY feature that
+    # acts without a user gesture - turning this switch ON is itself the
+    # request (the mouse1 equivalent). The engine scans the middle of the
+    # screen every auto_click_interval (default 100 ms) for the best item
+    # and clicks it: with an accent colour set, only items carrying that
+    # colour qualify; without one, the highest-contrast item in the centre
+    # square qualifies, held to the stricter auto_click_min_contrast gate.
     #
     # SAFETY IS STRUCTURAL, not advisory:
-    #   * it refuses to arm at all while accent_color is off - without a
-    #     colour to aim at, "auto-click" would mean "click whatever is
-    #     nearest", which is never what anyone means;
-    #   * accent_only is forced on for the auto scan, so only items
-    #     carrying the accent colour are ever eligible;
+    #   * colour-free mode clicks ONLY crisp, clearly drawn items (the
+    #     min_contrast gate above), never blurry background noise;
     #   * exclude_color still wins: a colour on the never-click list
     #     removes the item from the scan entirely;
     #   * it never clicks inside Snappy AI's own windows;
@@ -203,11 +249,15 @@ DEFAULT_CONFIG = {
     #     settle delay cap how fast it can act.
     "auto_click": False,
 
-    # Seconds between automatic scans.
-    "auto_click_interval": 2.0,
+    # Seconds between automatic scans. The default is 100 ms: the loop
+    # re-scans the centre square ten times a second and fires at the
+    # first qualifying item (repeat guard + settle below still pace it).
+    "auto_click_interval": 0.1,
 
     # Contrast gate for an auto-click target, on the same scale as
-    # min_contrast. Raise it and only strong, crisp items qualify.
+    # min_contrast. This is what makes colour-free auto-clicking safe:
+    # with no accent colour set, ONLY items this crisp are eligible.
+    # Raise it and only strong, crisp items qualify.
     "auto_click_min_contrast": 60,
 
     # Safety cap: automatic clicks per launched session. The engine stops
@@ -643,16 +693,23 @@ class Config:
         "stall_pause_seconds": (0.0, 3.0),
         "on_target_dist": (0, 100),
         "motion_lead_ms": (0, 300),
+        # Colour-stage scan budget. The old hard-coded 120 ms deadline
+        # cut the colour scoring short on busy screens ("Colour stage
+        # cut short" log spam) so accent_only/exclude_color items failed
+        # closed - visible especially with auto-click's wide multi-accent
+        # lists and radius 400. Raising it only lets more items get
+        # scored; clicks never wait longer than the scan actually takes.
+        "scan_budget_ms": (60, 2000),
         # The snap offset is deliberately bounded: it re-aims the click
         # within the neighbourhood of the item, it must never be able to
         # send a click across the screen on its own.
         "snap_offset_x": (-200, 200),
         "snap_offset_y": (-200, 200),
         # Auto-click bounds. The floors/ceilings here are SAFETY limits,
-        # not taste: a sub-second interval would click faster than a person
-        # can react, and an unbounded cap would turn a misconfigured setup
-        # into runaway input.
-        "auto_click_interval": (0.5, 60.0),
+        # not taste: the interval may now go down to 100 ms (the user's
+        # requested cadence) but never below it, and an unbounded cap
+        # would turn a misconfigured setup into runaway input.
+        "auto_click_interval": (0.1, 60.0),
         "auto_click_min_contrast": (20, 150),
         "auto_click_max_clicks": (1, 200),
         "auto_click_settle_ms": (0, 2000),
@@ -689,6 +746,7 @@ class Config:
         _CHOICES = {
             "accent_matcher": ("hsv", "oklab"),
             "capture_backend": ("auto", "dxcam", "mss", "wgc"),
+            "input_backend": ("win32", "interception"),
         }
         for key, allowed in _CHOICES.items():
             raw = self.values.get(key, DEFAULT_CONFIG[key])
@@ -715,9 +773,10 @@ class Config:
 
         if self.values.get("auto_click") \
                 and not parse_accents(self.values.get("accent_color")):
-            log("config: auto_click is on but accent_color is off - it "
-                "stays on and refuses to act until a colour to aim at "
-                "is set again.")
+            log("config: auto_click is on with no accent colour - it "
+                "will click the highest-contrast item in the centre "
+                "square instead (raise auto_click_min_contrast if it "
+                "picks too eagerly).")
 
         if str(self.values.get("follow_learn", "accent")).lower() \
                 not in ("accent", "any"):

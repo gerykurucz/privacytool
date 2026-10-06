@@ -40,6 +40,14 @@ class SnappyAI:
             print('SnappyAI ON')
             last_frame_error = None
             last_frame_error_time = 0.0
+            # Fractional-move carry: sub-pixel focus output accumulates
+            # here so it never rounds down to zero and stalls the cursor.
+            carry_x = 0.0
+            carry_y = 0.0
+            # Rapid-click scheduler state (honours [rapid_click] target_cps;
+            # previously the rate was ignored and it fired once per loop).
+            rapid_next = 0.0
+            rapid_interval = 1.0 / max(config.target_cps, 1)
 
             try:
                 # assist loop
@@ -69,17 +77,30 @@ class SnappyAI:
                             delay_before_click = self._calculate_click_delay(config)
                             mouse.click(delay_before_click)
 
-                        assist.calculate_focus(assist.get_focus_state(), target)
+                        assist.calculate_focus(assist.get_focus_state(), target, delta_time)
 
                     if keybinds.get_rapid_click_state():
-                        mouse.click()
+                        now_r = time.perf_counter()
+                        if now_r >= rapid_next:
+                            mouse.click()
+                            rapid_next = max(now_r, rapid_next) + rapid_interval
+                    else:
+                        rapid_next = 0.0
 
                     # Apply help
                     assist.apply_help(assist.help_state, delta_time)
 
-                    # Move the mouse based on the previous calculations
-                    if assist.move_x != 0 or assist.move_y != 0:
-                        mouse.move(assist.move_x, assist.move_y)
+                    # Move the mouse based on the previous calculations.
+                    # Fractional moves are carried over between frames so a
+                    # sub-pixel-smoothed focus never rounds down to zero.
+                    total_x = assist.move_x + carry_x
+                    total_y = assist.move_y + carry_y
+                    int_x = int(round(total_x))
+                    int_y = int(round(total_y))
+                    carry_x = total_x - int_x
+                    carry_y = total_y - int_y
+                    if int_x != 0 or int_y != 0:
+                        mouse.move(int_x, int_y)
 
                     # Reset move values so the focus doesn't keep drifting when no targets are on the screen
                     assist.move_x, assist.move_y = (0, 0)
