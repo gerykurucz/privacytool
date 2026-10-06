@@ -178,16 +178,12 @@ STRINGS = {
             "Dokumente senken ihre eigene Erkennungslatte "
             "automatisch, damit auch schwache Elemente gefunden "
             "werden. Empfohlen.",
-        "desc.auto_click": "Der Bildschirm wird von selbst "
-            "abgetastet, und das beste Element in IHRER Farbe wird "
-            "angeklickt, ohne dass Sie klicken. Braucht »Meine "
-            "Farbe(n)« - ohne sie gibt es nichts anzuzielen, also "
-            "wartet er still, bis Sie eine setzen. Klickt nie im "
-            "pausierten Zustand, nie in Snappy AIs eigenen Fenstern, "
-            "nie eine Farbe der Niemals-Klick-Liste, und hält an der "
-            "Grenze unten an. Nur dort einschalten, wo Sie es "
-            "wollen; mit Pause holen Sie sich die Maus jederzeit "
-            "zurück.",
+        "desc.auto_click": "Eingeschaltet klickt das Programm alle 0,1 Sekunden von selbst auf "
+            "das beste Element im beobachteten Bereich – zuerst nach Kontrast "
+            "sortiert. Ist eine Akzentfarbe gesetzt, kommen nur Elemente mit "
+            "dieser Farbe infrage; ohne Farbe werden nur sehr scharf "
+            "gezeichnete Elemente geklickt. Dasselbe Feld nicht zweimal, "
+            "eigenes Fenster nie.",
         "desc.auto_click_interval": "Wie oft der Bildschirm nach "
             "Ihrer Farbe schaut (0,5-60). Eine langsame Zahl ist die "
             "sichere: 2-5 passt zu einem Dialog, den Sie beobachten.",
@@ -618,7 +614,7 @@ STRINGS = {
             "Farbe erkennen",
         "lbl.adaptive_threshold": "Automatisch für dunkle "
             "Bildschirme anpassen",
-        "lbl.auto_click": "Klick auf meine Farbe selbst",
+        "lbl.auto_click": "Klickt selbst auf Elemente",
         "lbl.auto_click_interval": "Sekunden zwischen Auto-Klicks",
         "lbl.auto_click_max_clicks": "Auto-Klick-Limit pro Sitzung",
         "lbl.auto_click_min_contrast": "Wie scharf ein "
@@ -661,6 +657,25 @@ STRINGS = {
             "Elementen",
         "lbl.motion_lead_ms": "Wie weit voraus zielen",
         "lbl.motion_predict": "Bewegte Elemente vorhalten",
+        "lbl.watch_center_only": "Nur die Bildschirmmitte beobachten",
+        "desc.watch_center_only": "Die Hilfe beachtet nur ein festes Quadrat in der Mitte des "
+            "Bildschirms (Größe = Suchdistanz, standardmäßig 150×150 px) – egal "
+            "wo der Cursor steht. Klicks außerhalb dieses Quadrats bleiben "
+            "unberührt.",
+        "lbl.center_follow": "Bildschirm folgt dem Ziel",
+        "desc.center_follow": "Wenn „Nur die Bildschirmmitte beobachten“ an ist: Nach dem "
+            "Einrasten auf ein Element bewegt die Hilfe den Bildschirm mit, "
+            "damit das Ziel in der Mitte bleibt – besonders bei scrollenden "
+            "Flächen. Bewege den Bildschirm selbst, um die Verfolgung "
+            "loszulassen.",
+        "lbl.input_backend": "Eingabemethode",
+        "desc.input_backend": "Windows-Einspeisung (Standard) funktioniert überall. Interception "
+            "sendt über den Treiber und wird von Spielen als echte Maus erkannt "
+            "– erfordert den installierten Interception-Treiber und "
+            "interception.dll neben dem Programm; sonst automatisch "
+            "Windows-Einspeisung.",
+        "val.input_backend.win32": "Windows-Einspeisung",
+        "val.input_backend.interception": "Interception (Treiber)",
         "lbl.mouse2_action": "Zusatzaktion für Rechtsklick",
         "lbl.mouse2_hold_action": "Zusatzaktion für Rechts-Halten",
         "lbl.on_target_dist": "Abstand für 'schon getroffen'",
@@ -973,15 +988,11 @@ STRINGS = {
             "automatikusan lejjebb viszik a saját felismerési "
             "küszöbüket, így a halvány elemek is meglesznek. "
             "Ajánlott.",
-        "desc.auto_click": "A képernyő magától pásztáz, és a legjobb "
-            "ELEM AZ ÖN színében kattint, anélkül hogy ön "
-            "kattintana. Kell hozzá a »Saját szín(ek)« - nélküle "
-            "nincs mit célozni, ezért csendben vár, amíg be nem "
-            "állít egyet. Szünetben soha nem kattint, a Snappy AI "
-            "saját ablakaiban soha, a Soha-nem-kattintható lista "
-            "színeire soha, és az alábbi határnál megáll. Csak ott "
-            "kapcsolja be, ahol akarja; Szünettel bármikor "
-            "visszakapja az egeret.",
+        "desc.auto_click": "Bekapcsolva a program minden 0,1 másodpercben magától kattint a "
+            "figyelt terület legjobb elemére, a kontraszt az elsőbbségi "
+            "szempont. Ha alapszín be van állítva, csak a színes elemek "
+            "jöhetnek szóba; szín nélkül csak a nagyon élesen rajzolt elemekre "
+            "kattint. Ugyanoda sosem kétszer, és saját ablakaira soha.",
         "desc.auto_click_interval": "Milyen gyakran nézi a képernyőt "
             "az ön színe után (0,5-60). A lassú szám a biztonságos: "
             "2-5 egy figyelt párbeszédhez való.",
@@ -1395,7 +1406,7 @@ STRINGS = {
             "állapotai",
         "lbl.adaptive_threshold": "Automatikus igazítás halvány "
             "képernyőkhöz",
-        "lbl.auto_click": "Kattintson a saját színemre magától",
+        "lbl.auto_click": "Magától kattint az elemekre",
         "lbl.auto_click_interval": "Másodperc az automatikus "
             "kattintások közt",
         "lbl.auto_click_max_clicks": "Automatikus kattintások határa "
@@ -1443,6 +1454,24 @@ STRINGS = {
         "lbl.motion_3d": "Okosabb követés mozgó elemeknél",
         "lbl.motion_lead_ms": "Mennyivel előre célozzon",
         "lbl.motion_predict": "Mozgó célok megelőzése",
+        "lbl.watch_center_only": "Csak a képernyő közepét figyelje",
+        "desc.watch_center_only": "A segítség csak a képernyő közepén lévő rögzített négyzetet "
+            "figyeli (méret = keresési távolság, alapértelmezés szerint 150×150 "
+            "px), függetlenül a kurzor helyétől. A négyzeten kívüli kattintások "
+            "érintetlenek maradnak.",
+        "lbl.center_follow": "A képernyő követi a célt",
+        "desc.center_follow": "Ha a „Csak a képernyő közepét figyelje” be van kapcsolva: egy elem "
+            "megragadása után a segítség mozgatja a képernyőt, hogy középen "
+            "maradjon – különösen görgetett felületeknél. Mozgasd magad a "
+            "képernyőt a követés elengedéséhez.",
+        "lbl.input_backend": "Beviteli mód",
+        "desc.input_backend": "A Windows-befecskendezés (alapértelmezett) mindenhol működik. Az "
+            "Interception illesztőprogramon keresztül küld, és a játékok valódi "
+            "egérként ismerik fel; telepített Interception-illesztőprogramot és "
+            "az interception.dll-t igényli a program mellett; hiányában "
+            "automatikusan a Windows-befecskendezést használja.",
+        "val.input_backend.win32": "Windows-befecskendezés",
+        "val.input_backend.interception": "Interception (illesztő)",
         "lbl.mouse2_action": "Jobb gomb kiegészítő művelete",
         "lbl.mouse2_hold_action": "Jobb gomb nyomvatartásának "
             "művelete",
@@ -1748,14 +1777,11 @@ STRINGS = {
             "lavados bajan solos su listón de detección, así los "
             "elementos tenues también se encuentran. Recomendado "
             "activado.",
-        "desc.auto_click": "La pantalla se examina sola y se hace "
-            "clic en el mejor elemento DE SU color, sin que usted "
-            "pulse nada. Necesita »Mi color« - sin él no hay a qué "
-            "apuntar así que espera en silencio hasta que fije uno. "
-            "Nunca pulsa en pausa, nunca en las ventanas de Snappy "
-            "AI, nunca un color de la lista jamás clicable, y se "
-            "detiene en el límite. Actívelo solo donde lo quiera, y "
-            "recupere el ratón con Pausa en cualquier momento.",
+        "desc.auto_click": "Activado, el programa hace clic por sí solo cada 0,1 segundos en "
+            "el mejor elemento del área observada, priorizando el contraste. "
+            "Con color de acento definido, solo cuentan los elementos con ese "
+            "color; sin color, solo se clican los dibujados con gran nitidez. "
+            "Nunca dos veces en el mismo sitio ni en ventanas propias.",
         "desc.auto_click_interval": "Cada cuánto se busca su color "
             "en pantalla (0,5-60). Un número lento es el seguro: 2-5 "
             "va bien para un diálogo que usted observa.",
@@ -2172,7 +2198,7 @@ STRINGS = {
         "lbl.accent_variants": "Estados claros y oscuros de mi color",
         "lbl.adaptive_threshold": "Ajuste automático para pantallas "
             "tenues",
-        "lbl.auto_click": "Hacer clic en mi color automáticamente",
+        "lbl.auto_click": "Clicar elementos él solo",
         "lbl.auto_click_interval": "Segundos entre clics automáticos",
         "lbl.auto_click_max_clicks": "Límite de clics automáticos "
             "por sesión",
@@ -2214,6 +2240,24 @@ STRINGS = {
         "lbl.motion_3d": "Seguimiento más inteligente en movimiento",
         "lbl.motion_lead_ms": "Cuánto anticipar el blanco",
         "lbl.motion_predict": "Anticipar elementos en movimiento",
+        "lbl.watch_center_only": "Vigilar solo el centro de la pantalla",
+        "desc.watch_center_only": "La ayuda solo observa un cuadrado fijo en el centro de la pantalla "
+            "(tamaño = distancia de búsqueda, 150×150 px por defecto), sin "
+            "importar dónde esté el cursor. Los clics fuera de ese cuadrado no "
+            "se modifican.",
+        "lbl.center_follow": "La pantalla sigue al objetivo",
+        "desc.center_follow": "Con «Vigilar solo el centro de la pantalla» activado: tras "
+            "enganchar un elemento, la ayuda mueve la pantalla para mantenerlo "
+            "en el centro, especialmente en planos que se desplazan. Mueve tú "
+            "la pantalla para soltar el seguimiento.",
+        "lbl.input_backend": "Método de entrada",
+        "desc.input_backend": "Inyección de Windows (predeterminado) funciona en todas partes. "
+            "Interception envía a través del controlador y los juegos lo "
+            "reconocen como ratón real; requiere el controlador instalado y "
+            "interception.dll junto al programa; si falta, usa la inyección de "
+            "Windows automáticamente.",
+        "val.input_backend.win32": "Inyección de Windows",
+        "val.input_backend.interception": "Interception (controlador)",
         "lbl.mouse2_action": "Acción extra del clic derecho",
         "lbl.mouse2_hold_action": "Acción extra de mantener el "
             "derecho",
@@ -2535,15 +2579,11 @@ STRINGS = {
             "délavés abaissent seuls leur seuil de détection, si "
             "bien que les éléments pâles sont trouvés aussi. "
             "Recommandé activé.",
-        "desc.auto_click": "L'écran est balayé tout seul, et le "
-            "meilleur élément DE VOTRE couleur est cliqué, sans que "
-            "vous cliquiez. Exige « Ma couleur » - sans elle il n'y "
-            "a rien à viser, il attend donc silencieusement que vous "
-            "en fixiez une. Ne clique jamais en pause, jamais dans "
-            "les fenêtres de Snappy AI, jamais une couleur de la "
-            "liste jamais cliquable, et s'arrête à la limite "
-            "ci-dessous. Ne l'activez que là où vous le voulez, et "
-            "reprenez la souris avec Pause à tout moment.",
+        "desc.auto_click": "Activé, le programme clique seul toutes les 0,1 s sur le meilleur "
+            "élément de la zone surveillée, en privilégiant le contraste. Avec "
+            "une couleur d'accent définie, seuls les éléments porteurs comptent "
+            "; sans couleur, seuls les éléments très nets sont cliqués. Jamais "
+            "deux fois au même endroit ni dans ses propres fenêtres.",
         "desc.auto_click_interval": "Tous les combien l'écran est "
             "examiné pour votre couleur (0,5-60). Un nombre lent est "
             "le plus sûr : 2-5 convient à un dialogue que vous "
@@ -2984,7 +3024,7 @@ STRINGS = {
         "lbl.accent_variants": "États clairs et sombres de ma "
             "couleur",
         "lbl.adaptive_threshold": "Réglage auto pour écrans ternes",
-        "lbl.auto_click": "Cliquer ma couleur tout seul",
+        "lbl.auto_click": "Cliquer les éléments tout seul",
         "lbl.auto_click_interval": "Secondes entre les clics "
             "automatiques",
         "lbl.auto_click_max_clicks": "Limite de clics automatiques "
@@ -3030,6 +3070,23 @@ STRINGS = {
             "mobiles",
         "lbl.motion_lead_ms": "Quelle avance pour le tir",
         "lbl.motion_predict": "Anticiper les éléments mobiles",
+        "lbl.watch_center_only": "Surveiller uniquement le centre de l'écran",
+        "desc.watch_center_only": "L'assistance n'observe qu'un carré fixe au centre de l'écran "
+            "(taille = distance de recherche, 150×150 px par défaut), où que "
+            "soit le curseur. Les clics hors de ce carré restent inchangés.",
+        "lbl.center_follow": "L'écran suit la cible",
+        "desc.center_follow": "Quand « Surveiller uniquement le centre de l'écran » est activé : "
+            "après l'accrochage d'un élément, l'assistance déplace l'écran pour "
+            "le garder au centre, surtout sur les plans défilants. Déplacez "
+            "vous-même l'écran pour relâcher le suivi.",
+        "lbl.input_backend": "Méthode d'entrée",
+        "desc.input_backend": "Injection Windows (par défaut) fonctionne partout. Interception "
+            "envoie via le pilote et les jeux le reconnaissent comme une vraie "
+            "souris ; nécessite le pilote Interception installé et "
+            "interception.dll à côté du programme ; sinon l'injection Windows "
+            "est utilisée automatiquement.",
+        "val.input_backend.win32": "Injection Windows",
+        "val.input_backend.interception": "Interception (pilote)",
         "lbl.mouse2_action": "Action supplémentaire du clic droit",
         "lbl.mouse2_hold_action": "Action du maintien du clic droit",
         "lbl.on_target_dist": "Distance « déjà dessus »",
@@ -3348,14 +3405,11 @@ STRINGS = {
         "desc.adaptive_threshold": "Ciemne motywy i wyblakłe "
             "dokumenty same obniżają swój próg wykrywania, więc "
             "blade elementy też są znajdowane. Zalecane wł.",
-        "desc.auto_click": "Ekran jest skanowany sam, a najlepszy "
-            "element W TWOIM kolorze jest klikany, bez Twojego "
-            "klikania. Wymaga »Mój kolor« - bez niego nie ma w co "
-            "celować więc czeka po cichu, aż jakiś ustawisz. Nigdy "
-            "nie klika w pauzie, nigdy w oknach Snappy AI, nigdy "
-            "koloru z listy nigdy nieklikalnej, i zatrzymuje się na "
-            "limicie poniżej. Włączaj tylko tam, gdzie chcesz, a "
-            "Pauzą odbierz mysz w każdej chwili.",
+        "desc.auto_click": "Włączone: program sam klika co 0,1 sekundy w najlepszy element "
+            "obserwowanego obszaru, przedkładając kontrast. Ustawiony kolor "
+            "akcentu oznacza, że kwalifikują się tylko kolorowe elementy; bez "
+            "koloru klikane są wyłącznie bardzo wyraziste. Nigdy dwa razy w tym "
+            "samym miejscu ani we własnych oknach.",
         "desc.auto_click_interval": "Jak często ekran jest "
             "sprawdzany pod kątem Twojego koloru (0,5-60). Wolna "
             "liczba to bezpieczna: 2-5 pasuje do obserwowanego okna "
@@ -3760,7 +3814,7 @@ STRINGS = {
         "lbl.accent_variants": "Jasne i ciemne stany mojego koloru",
         "lbl.adaptive_threshold": "Automatyczne dopasowanie do "
             "przyciemnionych ekranów",
-        "lbl.auto_click": "Klikaj mój kolor automatycznie",
+        "lbl.auto_click": "Klikna elementy samoistnie",
         "lbl.auto_click_interval": "Sekundy między kliknięciami auto",
         "lbl.auto_click_max_clicks": "Limit kliknięć auto na sesję",
         "lbl.auto_click_min_contrast": "Jak wyraźny musi być cel "
@@ -3802,6 +3856,24 @@ STRINGS = {
         "lbl.motion_3d": "Inteligentniejsze śledzenie w ruchu",
         "lbl.motion_lead_ms": "Jak bardzo wyprzedzać",
         "lbl.motion_predict": "Wyprzedzaj ruchome elementy",
+        "lbl.watch_center_only": "Obserwuj tylko środek ekranu",
+        "desc.watch_center_only": "Asystent obserwuje wyłącznie stały kwadrat w środku ekranu "
+            "(rozmiar = dystans wyszukiwania, domyślnie 150×150 px), "
+            "niezależnie od położenia kursora. Kliknięcia poza tym kwadratem "
+            "pozostają bez zmian.",
+        "lbl.center_follow": "Ekran podąża za celem",
+        "desc.center_follow": "Przy włączonym «Obserwuj tylko środek ekranu»: po przyciągnięciu "
+            "elementu asystent przesuwa ekran, aby utrzymać go w środku, "
+            "zwłaszcza na przewijanych płaszczyznach. Przesuń ekran "
+            "samodzielnie, aby zwolnić podążanie.",
+        "lbl.input_backend": "Metoda wprowadzania",
+        "desc.input_backend": "Wstrzykiwanie Windows (domyślne) działa wszędzie. Interception "
+            "wysyła przez sterownik i gry rozpoznają je jako prawdziwą mysz; "
+            "wymaga zainstalowanego sterownika Interception i pliku "
+            "interception.dll obok programu; w przeciwnym razie automatycznie "
+            "używa wstrzykiwania Windows.",
+        "val.input_backend.win32": "Wstrzykiwanie Windows",
+        "val.input_backend.interception": "Interception (sterownik)",
         "lbl.mouse2_action": "Dodatkowa akcja prawego przycisku",
         "lbl.mouse2_hold_action": "Akcja przytrzymania prawego "
             "przycisku",
@@ -4107,14 +4179,11 @@ STRINGS = {
         "desc.adaptive_threshold": "Тёмные темы и выцветшие "
             "документы сами понижают свой порог обнаружения, поэтому "
             "бледные элементы тоже находятся. Рекомендовано вкл.",
-        "desc.auto_click": "Экран сканируется сам, и лучший элемент "
-            "ВАШЕГО цвета кликается без вашего клика. Нужен »Мой "
-            "цвет« - без него не во что целиться, поэтому тихо ждёт, "
-            "пока вы не зададите его. Никогда не кликает на паузе, "
-            "никогда в окнах Snappy AI, никогда цвет из "
-            "никогда-некликабельного списка, и останавливается на "
-            "лимите ниже. Включайте только там, где хотите, а Паузой "
-            "забирайте мышь в любой момент.",
+        "desc.auto_click": "Включено: программа сама кликает каждые 0,1 с по лучшему элементу "
+            "наблюдаемой области, приоритет — контраст. При заданном акцентном "
+            "цвете годятся только окрашенные элементы; без цвета кликаются "
+            "только очень чётко прорисованные. Никогда дважды в одном месте и "
+            "не в собственных окнах.",
         "desc.auto_click_interval": "Как часто экран проверяется на "
             "ваш цвет (0,5-60). Медленное число - безопасное: 2-5 "
             "подходит для диалога, за которым вы следите.",
@@ -4524,7 +4593,7 @@ STRINGS = {
             "цвета",
         "lbl.adaptive_threshold": "Автоподстройка для тусклых "
             "экранов",
-        "lbl.auto_click": "Кликать мой цвет автоматически",
+        "lbl.auto_click": "Кликать элементы само",
         "lbl.auto_click_interval": "Секунды между автокликами",
         "lbl.auto_click_max_clicks": "Лимит автокликов за сеанс",
         "lbl.auto_click_min_contrast": "Насколько чёткой должна быть "
@@ -4567,6 +4636,24 @@ STRINGS = {
         "lbl.motion_3d": "Умное слежение за движением",
         "lbl.motion_lead_ms": "Насколько целиться вперёд",
         "lbl.motion_predict": "Опережать движущиеся элементы",
+        "lbl.watch_center_only": "Следить только за центром экрана",
+        "desc.watch_center_only": "Помощник наблюдает только за фиксированным квадратом в центре "
+            "экрана (размер = дистанция поиска, по умолчанию 150×150 px), "
+            "независимо от положения курсора. Клики вне этого квадрата остаются "
+            "без изменений.",
+        "lbl.center_follow": "Экран следует за целью",
+        "desc.center_follow": "Когда «Следить только за центром экрана» включено: после захвата "
+            "элемента помощник двигает экран, чтобы удерживать его в центре, "
+            "особенно на прокручиваемых плоскостях. Двигайте экран сами, чтобы "
+            "отпустить следование.",
+        "lbl.input_backend": "Метод ввода",
+        "desc.input_backend": "Инъекция Windows (по умолчанию) работает везде. Interception "
+            "отправляет через драйвер, и игры распознают её как настоящую мышь; "
+            "требует установленного драйвера Interception и interception.dll "
+            "рядом с программой; иначе автоматически используется инъекция "
+            "Windows.",
+        "val.input_backend.win32": "Инъекция Windows",
+        "val.input_backend.interception": "Interception (драйвер)",
         "lbl.mouse2_action": "Дополнительное действие правой кнопки",
         "lbl.mouse2_hold_action": "Действие удержания правой кнопки",
         "lbl.on_target_dist": "Расстояние «уже попали»",
@@ -4834,9 +4921,7 @@ STRINGS = {
         "desc.accent_tolerance": "颜色需要多接近才算您的（4-90）。越低越严格。",
         "desc.accent_variants": "您的颜色的更亮和更暗版本也算数，这样悬停、按下和变暗状态都有效，而无需放宽色相容差。只有明度——错的色相永远混不进来。",
         "desc.adaptive_threshold": "暗色主题和发灰的文档会自动降低自己的检测门槛，因此较淡的目标也能找到。建议开启。",
-        "desc.auto_click": "屏幕会自动扫描，并点击带有您颜色的最佳元素，而无需您点击。需要设置“我的颜色”——没有它就没有目标它会静静等待，直到您设置一个。暂停时从不点击，从不在 "
-            "Snappy AI "
-            "自己的窗口中点击，从不点击永不点击列表中的颜色，并在下面的上限处停止。只在需要的地方打开，随时按暂停拿回鼠标。",
+        "desc.auto_click": "开启后，程序每0.1秒自动点击被观察区域内的最佳项目，以对比度优先。设置了强调色时，只有带该色的项目符合条件；未设置颜色时，仅点击绘制非常清晰的项目。同一处不重复点击，绝不点击自己的窗口。",
         "desc.auto_click_interval": "屏幕多久检查一次您的颜色（0.5-60）。慢速数字更安全：2-5 "
             "适合您正在注视的对话框。",
         "desc.auto_click_max_clicks": "启动后最多自动点击多少次（1-200）。到达上限即停止并提示，错误的设置不会失控。",
@@ -5013,7 +5098,7 @@ STRINGS = {
         "lbl.accent_tolerance": "颜色匹配严格度",
         "lbl.accent_variants": "识别我颜色的亮/暗状态",
         "lbl.adaptive_threshold": "自动适应昏暗屏幕",
-        "lbl.auto_click": "自动点击我的颜色",
+        "lbl.auto_click": "自行点击项目",
         "lbl.auto_click_interval": "自动点击的间隔秒数",
         "lbl.auto_click_max_clicks": "每次会话的自动点击上限",
         "lbl.auto_click_min_contrast": "自动点击目标需多清晰",
@@ -5050,6 +5135,14 @@ STRINGS = {
         "lbl.motion_3d": "移动目标智能跟随",
         "lbl.motion_lead_ms": "提前瞄准多少",
         "lbl.motion_predict": "提前瞄准移动的目标",
+        "lbl.watch_center_only": "仅注视屏幕中心",
+        "desc.watch_center_only": "辅助功能只扫描屏幕正中心的固定方框（大小=搜索距离，默认150×150像素），与光标位置无关。该方框之外的点击保持原样。",
+        "lbl.center_follow": "屏幕跟随目标",
+        "desc.center_follow": "开启“仅注视屏幕中心”时：吸附到某个元素后，辅助功能会移动屏幕使其保持在中心——尤其适用于滚动画板。自己移动屏幕即可解除跟随。",
+        "lbl.input_backend": "输入方式",
+        "desc.input_backend": "Windows注入（默认）到处可用。Interception通过驱动发送，游戏将其识别为真实鼠标；需要已安装Interception驱动并在程序旁放置interception.dll；否则自动改用Windows注入。",
+        "val.input_backend.win32": "Windows注入",
+        "val.input_backend.interception": "Interception（驱动）",
         "lbl.mouse2_action": "右键附加动作",
         "lbl.mouse2_hold_action": "右键长按附加动作",
         "lbl.on_target_dist": "“已点中”的距离",
@@ -5239,9 +5332,7 @@ STRINGS = {
         "desc.accent_tolerance": "色がどれほど近ければ自分の色とみなすか（4-90）。低いほど厳格。",
         "desc.accent_variants": "あなたの色の明るい・暗い複製も一致とみなし、ホバー・押下・減光状態が色相許容を広げずに有効になります。明度だけ——違う色相が紛れ込むことは決してありません。",
         "desc.adaptive_threshold": "ダークテーマや色あせた文書は自分の検出基準を自動で下げるため、淡い対象も見つかります。オン推奨。",
-        "desc.auto_click": "画面は自動で走査され、あなたの色の最良の要素が、あなたがクリックしなくてもクリックされます。「自分の色」の設定が必要です——なければ狙うものがなく設定されるまで静かに待ちます。一時停止中は決してクリックせず、Snappy "
-            "AI "
-            "自身の窓でも、クリック禁止リストの色でもクリックせず、下の上限で止まります。使いたい場面でのみオンにし、一時停止でいつでもマウスを取り戻せます。",
+        "desc.auto_click": "オンにすると、監視領域内の最良アイテムへ0.1秒ごとに自動クリックします。判定はまずコントラスト優先。アクセントカラー設定時はその色を持つアイテムのみが対象。色なしでは非常にくっきり描かれたアイテムだけがクリックされます。同じ場所を二度はクリックせず、自ウィンドウも絶対にクリックしません。",
         "desc.auto_click_interval": "あなたの色のために画面を調べる間隔（0.5-60）。遅い数値が安全です：見守るダイアログには "
             "2-5 が向きます。",
         "desc.auto_click_max_clicks": "起動後に自動でクリックできる回数（1-200）。上限に達したら止まって知らせるので、誤設定が暴走しません。",
@@ -5445,7 +5536,7 @@ STRINGS = {
         "lbl.accent_tolerance": "色一致の厳しさ",
         "lbl.accent_variants": "自分の色の明暗状態を認識",
         "lbl.adaptive_threshold": "暗い画面に自動調整",
-        "lbl.auto_click": "自分の色を自動でクリック",
+        "lbl.auto_click": "自分でアイテムをクリック",
         "lbl.auto_click_interval": "自動クリックの間隔秒数",
         "lbl.auto_click_max_clicks": "セッションごとの自動クリック上限",
         "lbl.auto_click_min_contrast": "自動クリックのターゲットの鮮明さ",
@@ -5482,6 +5573,14 @@ STRINGS = {
         "lbl.motion_3d": "移動体への賢い追従",
         "lbl.motion_lead_ms": "どれだけ先を狙うか",
         "lbl.motion_predict": "動く対象を先回りする",
+        "lbl.watch_center_only": "画面中央のみを監視",
+        "desc.watch_center_only": "アシストは画面正中の固定四角（サイズ＝検索距離、既定150×150px）だけを対象にします。カーソルの位置は関係ありません。その四角の外でのクリックは変更されません。",
+        "lbl.center_follow": "画面がターゲットを追う",
+        "desc.center_follow": "「画面中央のみを監視」ON時：アイテムを捕らえた後、アシストはそれを中央に保つよう画面を動かします（スクロール平面で特に有効）。自分で画面を動かすと追従が解除されます。",
+        "lbl.input_backend": "入力方法",
+        "desc.input_backend": "Windowsインジェクション（既定）はどこでも動作します。Interceptionはドライバ経由で送信し、ゲームは実マウスとして認識します。Interceptionドライバのインストールとプログラム横のinterception.dllが必要。無い場合は自動的にWindowsインジェクションへ戻ります。",
+        "val.input_backend.win32": "Windowsインジェクション",
+        "val.input_backend.interception": "Interception（ドライバ）",
         "lbl.mouse2_action": "右クリックの追加動作",
         "lbl.mouse2_hold_action": "右長押しの追加動作",
         "lbl.on_target_dist": "「既に命中」の距離",
@@ -5682,10 +5781,9 @@ STRINGS = {
             "끼어들지 않습니다.",
         "desc.adaptive_threshold": "어두운 테마와 바랜 문서는 자체 감지 기준을 자동 낮춰 "
             "흐린 항목도 찾습니다. 켬 권장.",
-        "desc.auto_click": "화면이 스스로 검사되고, 클릭하지 않아도 내 색상의 가장 좋은 항목이 "
-            "클릭됩니다. »내 색상« 설정이 필요 - 없으면 조준할 것이 없어 설정될 때까지 조용히 기다립니다. "
-            "일시정지 중에는 클릭하지 않고, Snappy AI 자체 창에서도, 클릭 금지 목록 색상도 클릭하지 "
-            "않으며, 아래 한도에서 멈춥니다. 원하는 곳에서만 켜고, 일시정지로 언제든 마우스를 되찾으세요.",
+        "desc.auto_click": "켜면 프로그램이 관찰 영역의 가장 좋은 항목을 0.1초마다 스스로 클릭하며 대비를 우선합니다. 강조 색이 설정되면 그 "
+            "색을 가진 항목만 대상이고, 색이 없으면 매우 선명하게 그려진 항목만 클릭됩니다. 같은 곳을 두 번 클릭하지 않으며 "
+            "자체 창은 절대 클릭하지 않습니다.",
         "desc.auto_click_interval": "내 색상을 위해 화면을 확인하는 간격(0.5-60). "
             "느린 숫자가 안전합니다: 지켜보는 대화창에는 2-5가 적당합니다.",
         "desc.auto_click_max_clicks": "시작 후 자동으로 클릭할 수 있는 횟수(1-200). "
@@ -5929,7 +6027,7 @@ STRINGS = {
         "lbl.accent_tolerance": "색상 일치 엄격도",
         "lbl.accent_variants": "내 색상의 밝고 어두운 상태 인식",
         "lbl.adaptive_threshold": "어두운 화면에 자동 맞춤",
-        "lbl.auto_click": "내 색상을 자동으로 클릭",
+        "lbl.auto_click": "스스로 항목을 클릭",
         "lbl.auto_click_interval": "자동 클릭 간격(초)",
         "lbl.auto_click_max_clicks": "세션당 자동 클릭 한도",
         "lbl.auto_click_min_contrast": "자동 클릭 대상의 선명도",
@@ -5966,6 +6064,18 @@ STRINGS = {
         "lbl.motion_3d": "움직이는 항목 스마트 추적",
         "lbl.motion_lead_ms": "얼마나 미리 겨눌지",
         "lbl.motion_predict": "움직이는 대상 미리 겨냥",
+        "lbl.watch_center_only": "화면 중앙만 주시",
+        "desc.watch_center_only": "도움 기능은 화면 정중앙의 고정 사각형(크기=검색 거리, 기본 150×150px)만 스캔합니다. 커서 위치와 "
+            "무관합니다. 그 사각형 밖의 클릭은 그대로 통과합니다.",
+        "lbl.center_follow": "화면이 대상을 따라감",
+        "desc.center_follow": "“화면 중앙만 주시” 켜짐 시: 항목을 붙잡으면 도움 기능이 이를 중앙에 유지하도록 화면을 움직입니다(스크롤 평면에 "
+            "특히 유용). 직접 화면을 움직이면 추적이 해제됩니다.",
+        "lbl.input_backend": "입력 방식",
+        "desc.input_backend": "Windows 인젝션(기본)은 어디서나 작동합니다. Interception은 드라이버를 통해 전송하며 게임이 실제 "
+            "마우스로 인식합니다. Interception 드라이버 설치와 프로그램 옆 interception.dll이 필요합니다. "
+            "없으면 자동으로 Windows 인젝션을 사용합니다.",
+        "val.input_backend.win32": "Windows 인젝션",
+        "val.input_backend.interception": "Interception (드라이버)",
         "lbl.mouse2_action": "우클릭 추가 동작",
         "lbl.mouse2_hold_action": "우클릭 길게 누름 동작",
         "lbl.on_target_dist": "‘이미 맞춤’ 거리",
@@ -6203,15 +6313,11 @@ STRINGS = {
             "abbassano da soli la propria soglia di rilevamento, "
             "così si trovano anche elementi tenui. Consigliato "
             "attivo.",
-        "desc.auto_click": "Lo schermo viene esaminato da solo e "
-            "viene cliccato l'elemento migliore NEL SUO colore, "
-            "senza che lei prema nulla. Richiede »Il mio colore« - "
-            "senza non c'è nulla a cui mirare quindi attende in "
-            "silenzio finché non ne imposta uno. Non preme mai in "
-            "pausa, mai nelle finestre di Snappy AI, mai un colore "
-            "della lista mai cliccabile, e si ferma al limite sotto. "
-            "Lo accenda solo dove lo vuole, e con Pausa si riprende "
-            "il mouse in qualsiasi momento.",
+        "desc.auto_click": "Attivo, il programma clicca da solo ogni 0,1 secondi sul miglior "
+            "elemento dell'area osservata, privilegiando il contrasto. Con un "
+            "colore d'accento impostato contano solo gli elementi colorati; "
+            "senza colore si cliccano solo elementi molto nitidi. Mai due volte "
+            "nello stesso punto né sulle proprie finestre.",
         "desc.auto_click_interval": "Ogni quanto lo schermo viene "
             "controllato per il suo colore (0,5-60). Un numero lento "
             "è quello sicuro: 2-5 va bene per una finestra di "
@@ -6634,7 +6740,7 @@ STRINGS = {
         "lbl.accent_variants": "Stati chiari e scuri del mio colore",
         "lbl.adaptive_threshold": "Regolazione automatica per "
             "schermi tesi",
-        "lbl.auto_click": "Fai clic da solo sul mio colore",
+        "lbl.auto_click": "Clicca gli elementi da sé",
         "lbl.auto_click_interval": "Secondi tra i clic automatici",
         "lbl.auto_click_max_clicks": "Limite di clic automatici per "
             "sessione",
@@ -6678,6 +6784,24 @@ STRINGS = {
         "lbl.motion_3d": "Inseguimento più intelligente in movimento",
         "lbl.motion_lead_ms": "Quanto anticipare il tiro",
         "lbl.motion_predict": "Anticipa gli elementi in movimento",
+        "lbl.watch_center_only": "Osserva solo il centro dello schermo",
+        "desc.watch_center_only": "L'assistenza osserva solo un quadrato fisso al centro dello "
+            "schermo (dimensione = distanza di ricerca, 150×150 px "
+            "predefinita), indipendentemente dalla posizione del cursore. I "
+            "clic fuori da quel quadrato non vengono modificati.",
+        "lbl.center_follow": "Lo schermo segue l'oggetto",
+        "desc.center_follow": "Con «Osserva solo il centro dello schermo» attivo: dopo l'aggancio "
+            "di un elemento, l'assistenza muove lo schermo per tenerlo al "
+            "centro, soprattutto su piani scorrevoli. Muovi tu lo schermo per "
+            "rilasciare l'inseguimento.",
+        "lbl.input_backend": "Metodo di immissione",
+        "desc.input_backend": "L'iniezione Windows (predefinito) funziona ovunque. Interception "
+            "invia tramite driver e i giochi la riconoscono come mouse reale; "
+            "richiede il driver Interception installato e interception.dll "
+            "accanto al programma; altrimenti usa automaticamente l'iniezione "
+            "Windows.",
+        "val.input_backend.win32": "Iniezione Windows",
+        "val.input_backend.interception": "Interception (driver)",
         "lbl.mouse2_action": "Azione extra del clic destro",
         "lbl.mouse2_hold_action": "Azione del tenere premuto il "
             "destro",
@@ -6992,14 +7116,11 @@ STRINGS = {
             "desbotados baixam sozinhos a sua fasquia de deteção, "
             "por isso elementos ténues também são encontrados. "
             "Recomendado ligado.",
-        "desc.auto_click": "O ecrã é examinado sozinho e o melhor "
-            "elemento DA SUA cor recebe o clique, sem que clique. "
-            "Precisa de »A minha cor« - sem ela não há onde apontar "
-            "por isso espera em silêncio até definir uma. Nunca "
-            "clica em pausa, nunca nas janelas do Snappy AI, nunca "
-            "uma cor da lista jamais clicável, e para no limite "
-            "abaixo. Ligue só onde quiser, e com Pausa recupera o "
-            "rato a qualquer momento.",
+        "desc.auto_click": "Ligado, o programa clica sozinho a cada 0,1 segundos no melhor "
+            "item da área observada, dando prioridade ao contraste. Com cor de "
+            "acento definida, só contam os itens com essa cor; sem cor, só são "
+            "clicados itens muito nítidos. Nunca duas vezes no mesmo sítio nem "
+            "nas suas próprias janelas.",
         "desc.auto_click_interval": "Com que frequência o ecrã é "
             "verificado para a sua cor (0,5-60). Um número lento é o "
             "seguro: 2-5 serve para um diálogo que esteja a "
@@ -7416,7 +7537,7 @@ STRINGS = {
             "cor",
         "lbl.adaptive_threshold": "Ajuste automático para ecrãs "
             "baços",
-        "lbl.auto_click": "Clicar na minha cor sozinho",
+        "lbl.auto_click": "Clica nos itens sozinho",
         "lbl.auto_click_interval": "Segundos entre cliques "
             "automáticos",
         "lbl.auto_click_max_clicks": "Limite de cliques automáticos "
@@ -7459,6 +7580,24 @@ STRINGS = {
         "lbl.motion_3d": "Seguimento mais inteligente em movimento",
         "lbl.motion_lead_ms": "Quanta antecipação no tiro",
         "lbl.motion_predict": "Antecipar elementos em movimento",
+        "lbl.watch_center_only": "Observar apenas o centro do ecrã",
+        "desc.watch_center_only": "A assistência observa apenas um quadrado fixo no centro do ecrã "
+            "(tamanho = distância de pesquisa, 150×150 px por omissão), "
+            "independentemente da posição do cursor. Os cliques fora desse "
+            "quadrado não são alterados.",
+        "lbl.center_follow": "O ecrã segue o alvo",
+        "desc.center_follow": "Com «Observar apenas o centro do ecrã» ativo: após capturar um "
+            "item, a assistência move o ecrã para o manter no centro, "
+            "especialmente em planos com deslocamento. Mova você o ecrã para "
+            "libertar o seguimento.",
+        "lbl.input_backend": "Método de entrada",
+        "desc.input_backend": "A injeção do Windows (predefinido) funciona em todo lado. A "
+            "Interception envia através do controlador e os jogos reconhecem-na "
+            "como rato real; requer o controlador Interception instalado e "
+            "interception.dll junto ao programa; caso contrário usa "
+            "automaticamente a injeção do Windows.",
+        "val.input_backend.win32": "Injeção do Windows",
+        "val.input_backend.interception": "Interception (controlador)",
         "lbl.mouse2_action": "Ação extra do clique direito",
         "lbl.mouse2_hold_action": "Ação de manter o direito premido",
         "lbl.on_target_dist": "Distância de «já acertei»",
@@ -7764,14 +7903,11 @@ STRINGS = {
         "desc.adaptive_threshold": "Donkere thema's en verschoten "
             "documenten verlagen zelf hun detectielat, zodat ook "
             "vage elementen gevonden worden. Aanbevolen aan.",
-        "desc.auto_click": "Het scherm wordt vanzelf gescand en het "
-            "beste element in UW kleur wordt geklikt, zonder dat u "
-            "klikt. Heeft »Mijn kleur« nodig - zonder valt er niets "
-            "aan te wijzen dus wacht hij stil tot u er een instelt. "
-            "Klikt nooit gepauzeerd, nooit in Snappy AI-vensters, "
-            "nooit een kleur van de nooit-klikbaar-lijst, en stopt "
-            "bij de limiet hieronder. Alleen aanzetten waar u het "
-            "wilt, en met Pauze krijgt u de muis direct terug.",
+        "desc.auto_click": "Aangezet klikt het programma elke 0,1 seconde zelf op het beste "
+            "item in het bewaakte gebied, eerst op contrast gesorteerd. Met een "
+            "accentkleur komen alleen items met die kleur in aanmerking; zonder "
+            "kleur worden alleen zeer scherp getekende items geklikt. Nooit "
+            "twee keer op dezelfde plek, nooit eigen vensters.",
         "desc.auto_click_interval": "Hoe vaak het scherm op uw kleur "
             "wordt gecontroleerd (0,5-60). Een langzaam getal is "
             "veilig: 2-5 past bij een dialoog waar u naar kijkt.",
@@ -8188,7 +8324,7 @@ STRINGS = {
             "mijn kleur",
         "lbl.adaptive_threshold": "Automatisch aanpassen aan matte "
             "schermen",
-        "lbl.auto_click": "Zelf op mijn kleur klikken",
+        "lbl.auto_click": "Klikt items zelf aan",
         "lbl.auto_click_interval": "Seconden tussen automatische "
             "klikken",
         "lbl.auto_click_max_clicks": "Limiet automatische klikken "
@@ -8233,6 +8369,24 @@ STRINGS = {
         "lbl.motion_3d": "Slimmer volgen bij beweging",
         "lbl.motion_lead_ms": "Hoe ver vooruit mikken",
         "lbl.motion_predict": "Bewegende elementen voorlopen",
+        "lbl.watch_center_only": "Alleen het schermcentrum bewaken",
+        "desc.watch_center_only": "De assistentie bekijkt alleen een vast vierkant in het midden van "
+            "het scherm (grootte = zoekafstand, standaard 150×150 px), ongeacht "
+            "waar de cursor staat. Klik buiten dat vierkant blijven "
+            "onveranderd.",
+        "lbl.center_follow": "Scherm volgt het doel",
+        "desc.center_follow": "Met «Alleen het schermcentrum bewaken» aan: na het vergrendelen op "
+            "een item beweegt de assistentie het scherm om het in het midden te "
+            "houden, vooral bij scrollvlakken. Beweeg zelf het scherm om het "
+            "volgen los te laten.",
+        "lbl.input_backend": "Invoermethode",
+        "desc.input_backend": "Windows-injectie (standaard) werkt overal. Interception verzendt "
+            "via het stuurprogramma en spellen herkennen het als een echte "
+            "muis; vereist het geïnstalleerde Interception-stuurprogramma en "
+            "interception.dll naast het programma; anders wordt automatisch "
+            "Windows-injectie gebruikt.",
+        "val.input_backend.win32": "Windows-injectie",
+        "val.input_backend.interception": "Interception (stuurprogramma)",
         "lbl.mouse2_action": "Extra actie van de rechterknop",
         "lbl.mouse2_hold_action": "Actie bij ingehouden rechterknop",
         "lbl.on_target_dist": "Afstand voor «al geraakt»",
@@ -8536,14 +8690,11 @@ STRINGS = {
         "desc.adaptive_threshold": "Koyu temalar ve soluk belgeler "
             "kendi algılama çıtalarını kendileri indirir, böylece "
             "soluk öğeler de bulunur. Açık önerilir.",
-        "desc.auto_click": "Ekran kendiliğinden taranır ve SİZİN "
-            "renginizdeki en iyi öğe, siz tıklamadan tıklanır. "
-            "»Benim rengim« gerekir - o olmadan nişan alınacak bir "
-            "şey yoktur bu yüzden bir tane ayarlayana kadar sessizce "
-            "bekler. Duraklatılmışken asla tıklamaz, Snappy AI "
-            "pencerelerinde asla, asla-tıklanamaz listedeki renkleri "
-            "asla, ve aşağıdaki sınırda durur. Yalnız istediğiniz "
-            "yerde açın, Duraklat ile fareyi her an geri alın.",
+        "desc.auto_click": "Açıkken program, gözlenen bölgedeki en iyi öğeye her 0,1 saniyede "
+            "kendiliğinden tıklar; öncelik kontrasttır. Vurgu rengi ayarlıysa "
+            "yalnız renkli öğeler adaydır; renk yoksa sadece çok keskin "
+            "çizilmiş öğelere tıklanır. Aynı yere iki kez ve kendi "
+            "pencerelerine asla.",
         "desc.auto_click_interval": "Ekran renginiz için ne sıklıkla "
             "denetlenir (0,5-60). Yavaş sayı güvenlidir: 2-5, "
             "izlediğiniz bir pencereye uyar.",
@@ -8945,7 +9096,7 @@ STRINGS = {
         "lbl.accent_tolerance": "Renk eşleşmesinin katılığı",
         "lbl.accent_variants": "Rengimin açık ve koyu halleri",
         "lbl.adaptive_threshold": "Soluk ekranlara otomatik uyum",
-        "lbl.auto_click": "Rengimi kendim tıklat",
+        "lbl.auto_click": "Öğelere kendi tıklar",
         "lbl.auto_click_interval": "Otomatik tıklamalar arası saniye",
         "lbl.auto_click_max_clicks": "Oturum başına otomatik tıklama "
             "sınırı",
@@ -8986,6 +9137,23 @@ STRINGS = {
         "lbl.motion_3d": "Hareketlide daha akıllı takip",
         "lbl.motion_lead_ms": "Ne kadar önden nişan alınacak",
         "lbl.motion_predict": "Hareketli öğeleri önden nişanla",
+        "lbl.watch_center_only": "Yalnızca ekran merkezini izle",
+        "desc.watch_center_only": "Destek, yalnızca ekranın ortasındaki sabit bir kareyi tarar (boyut "
+            "= arama mesafesi, varsayılan 150×150 px); imlecin nerede olduğu "
+            "fark etmez. Bu karenin dışındaki tıklamalar değiştirilmez.",
+        "lbl.center_follow": "Ekran hedefi takip eder",
+        "desc.center_follow": "“Yalnızca ekran merkezini izle” açıkken: bir öğeye kilitlenince "
+            "destek, özellikle kayan düzlemlerde, onu merkezde tutmak için "
+            "ekranı hareket ettirir. Takibi bırakmak için ekranı siz hareket "
+            "ettirin.",
+        "lbl.input_backend": "Giriş yöntemi",
+        "desc.input_backend": "Windows enjeksiyonu (varsayılan) her yerde çalışır. Interception "
+            "sürücü üzerinden gönderir ve oyunlar bunu gerçek fare olarak "
+            "tanır; kurulu Interception sürücüsü ve programın yanında "
+            "interception.dll gerektirir; aksi halde otomatik olarak Windows "
+            "enjeksiyonu kullanılır.",
+        "val.input_backend.win32": "Windows enjeksiyonu",
+        "val.input_backend.interception": "Interception (sürücü)",
         "lbl.mouse2_action": "Sağ tıkın ek eylemi",
         "lbl.mouse2_hold_action": "Sağı basılı tutmanın eylemi",
         "lbl.on_target_dist": "«Zaten üzerinde» uzaklığı",
@@ -9290,14 +9458,11 @@ STRINGS = {
         "desc.adaptive_threshold": "Темні теми та вицвілі документи "
             "самі знижують свій поріг виявлення, тому бліді елементи "
             "теж знаходяться. Рекомендовано увімкнено.",
-        "desc.auto_click": "Екран сканується сам, і найкращий "
-            "елемент ВАШОГО кольору клікається без вашого кліку. "
-            "Потрібен »Мій колір« - без нього немає в що цілитись, "
-            "тому тихо чекає, доки ви не задасте його. Ніколи не "
-            "клікає на паузі, ніколи у вікнах Snappy AI, ніколи "
-            "колір зі списку ніколи-неклікабельних, і зупиняється на "
-            "ліміті нижче. Вмикайте лише там, де хочете, а Паузою "
-            "забирайте мишу будь-коли.",
+        "desc.auto_click": "Увімкнено: програма сама клацає кожні 0,1 с по найкращому елементі "
+            "спостережуваної ділянки, пріоритет — контраст. Якщо заданий "
+            "акцентний колір, придатні лише забарвлені елементи; без кольору "
+            "клацаються тільки дуже чітко намальовані. Ніколи двічі в одному "
+            "місці й не у власних вікнах.",
         "desc.auto_click_interval": "Як часто екран перевіряється на "
             "ваш колір (0,5-60). Повільне число - безпечне: 2-5 "
             "пасує до діалогу, за яким ви стежите.",
@@ -9700,7 +9865,7 @@ STRINGS = {
         "lbl.accent_variants": "Світлі й темні стани мого кольору",
         "lbl.adaptive_threshold": "Автопідлаштування для тьмяних "
             "екранів",
-        "lbl.auto_click": "Клікати мій колір автоматично",
+        "lbl.auto_click": "Клацати елементи самостійно",
         "lbl.auto_click_interval": "Секунди між автокліками",
         "lbl.auto_click_max_clicks": "Ліміт автокліків за сеанс",
         "lbl.auto_click_min_contrast": "Наскільки чіткою має бути "
@@ -9742,6 +9907,22 @@ STRINGS = {
         "lbl.motion_3d": "Розумніше стеження за рухомим",
         "lbl.motion_lead_ms": "Наскільки цілити вперед",
         "lbl.motion_predict": "Випереджати рухомі елементи",
+        "lbl.watch_center_only": "Слідкувати лише за центром екрана",
+        "desc.watch_center_only": "Помічник спостерігає лише за фіксованим квадратом у центрі екрана "
+            "(розмір = дистанція пошуку, типово 150×150 px), незалежно від "
+            "положення курсора. Кліки поза цим квадратом залишаються без змін.",
+        "lbl.center_follow": "Екран слідкує за ціллю",
+        "desc.center_follow": "Коли «Слідкувати лише за центром екрана» увімкнено: після "
+            "захоплення елемента помічник рухає екран, щоб утримувати його в "
+            "центрі, особливо на прокручуваних площинах. Рухайте екран "
+            "самостійно, щоб відпустити стеження.",
+        "lbl.input_backend": "Метод введення",
+        "desc.input_backend": "Ін'єкція Windows (типово) працює скрізь. Interception надсилає "
+            "через драйвер, і ігри розпізнають її як справжню мишу; потребує "
+            "встановленого драйвера Interception і interception.dll поруч із "
+            "програмою; інакше автоматично використовується ін'єкція Windows.",
+        "val.input_backend.win32": "Ін'єкція Windows",
+        "val.input_backend.interception": "Interception (драйвер)",
         "lbl.mouse2_action": "Додаткова дія правого кліку",
         "lbl.mouse2_hold_action": "Дія утримування правої кнопки",
         "lbl.on_target_dist": "Відстань «уже влучив»",
@@ -10046,15 +10227,12 @@ STRINGS = {
             "zilizopauka hushusha wenyewe kizingiti chao cha "
             "ugunduzi, hivyo vipengele dhaifu hupatikana pia. "
             "Inapendekezwa kuwasha.",
-        "desc.auto_click": "Skrini inajichunguza yenyewe, na "
-            "kipengee kizuri zaidi chenye RANGI YAKO kinabofywa bila "
-            "wewe kubofya. Inahitaji »Rangi yangu« - bila hiyo "
-            "hakuna cha kulenga, kwa hivyo inangoja kimya hadi uweke "
-            "moja. Haibofyi ikiwa imesitishwa, haibofyi kwenye "
-            "madirisha ya Snappy AI, haibofyi rangi kwenye orodha "
-            "isiyoweza kubofywa kamwe, na inasimama kwenye kikomo "
-            "hapo chini. Iwashe tu unapotaka, na kwa Sitisha rudisha "
-            "kipanya wakati wowote.",
+        "desc.auto_click": "Ikiwa washwa, programu yenyewe inabofya kila sekunde 0.1 kitu bora "
+            "katika eneo linalozingatiwa, ikipanga kwanza kwa contrast. Ikiwa "
+            "rangi ya kipaumbele imewekwa, vitu vilivyo na rangi hiyo ndivyo "
+            "vinavyostahili; bila rangi, vitu vilivyo chorwa kwa ukali ndivyo "
+            "vinabofywa. Kamwe mara mbili mahali pamoja wala dirisha lake "
+            "lenyewe.",
         "desc.auto_click_interval": "Skrini inatazamwa mara ngapi "
             "kwa rangi yako (0,5-60). Nambari ya polepole ndiyo "
             "salama: 2-5 inafaa dirisha unalolitazama.",
@@ -10476,7 +10654,7 @@ STRINGS = {
         "lbl.accent_variants": "Hali angavu na nyeusi za rangi yangu",
         "lbl.adaptive_threshold": "Marekebisho otomatiki kwa skrini "
             "dhaifu",
-        "lbl.auto_click": "Bofyenye rangi yangu pewe yenyewe",
+        "lbl.auto_click": "Bofya vitu vyenyewe",
         "lbl.auto_click_interval": "Sekunde kati ya mibofyo ya "
             "mojawa",
         "lbl.auto_click_max_clicks": "Kipimo cha mibofyo ya mojawa "
@@ -10524,6 +10702,23 @@ STRINGS = {
         "lbl.motion_3d": "Ufuatiliaji bora wa vitu vinavyosogea",
         "lbl.motion_lead_ms": "Kutangulia kwa umbali gani",
         "lbl.motion_predict": "Tangulia vipengele vinavyosogea",
+        "lbl.watch_center_only": "Fuatilia katikati ya skrini pekee",
+        "desc.watch_center_only": "Usaidizi huangalia mraba uliotulia katikati ya skrini (ukubwa = "
+            "umbali wa utafutaji, chaguo-msingi 150×150 px) bila kujali "
+            "kiashiria kiko. Bofyo nje ya mraba huo hubaki vilevile.",
+        "lbl.center_follow": "Skrini ifuate lengo",
+        "desc.center_follow": "«Fuatilia katikati ya skrini pekee» ikiwa washa: baada ya kitu "
+            "kushikwa, usaidizi husogeua skrini ili kikaa katikati hasa kwa "
+            "ndege zinazosogea. Sofisha skrini wewe mwenyewe kuachilia "
+            "ufuataji.",
+        "lbl.input_backend": "Njia ya ingizo",
+        "desc.input_backend": "Uingizaji wa Windows (chaguo-msingi) hufanya kila mahali. "
+            "Interception hutuma kupitia kiendeshi na michezo huitambua kama "
+            "panya halisi; inahitaji kiendeshi cha Interception kilichowekwa na "
+            "interception.dll karibu na programu; vinginevyo hutumia uingizaji "
+            "wa Windows kiotomatiki.",
+        "val.input_backend.win32": "Uingizaji wa Windows",
+        "val.input_backend.interception": "Interception (kiendeshi)",
         "lbl.mouse2_action": "Kitendo cha ziada cha bofi la kulia",
         "lbl.mouse2_hold_action": "Kitendo cha kushikilia kulia",
         "lbl.on_target_dist": "Umbali wa «tayari nimepata»",

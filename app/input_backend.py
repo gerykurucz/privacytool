@@ -133,24 +133,67 @@ class InterceptionBackend(object):
         dirs = []
         try:
             if getattr(sys, "frozen", False):
+                # v8.50 fix: the exe's OWN folder first. Windows' LoadLibrary
+                # does not reliably search it (CWD / System32 / PATH only), so
+                # an interception.dll sitting next to Snappy AI.exe was being
+                # reported as "missing" while the driver was installed fine.
                 dirs.append(os.path.dirname(sys.executable))
+                # PyInstaller onefile unpacks modules into _MEIPASS; a DLL
+                # bundled there is equally valid.
+                meipass = getattr(sys, "_MEIPASS", None)
+                if meipass:
+                    dirs.append(meipass)
             dirs.append(os.path.dirname(os.path.abspath(__file__)))
         except Exception:
             pass
         dirs.append("")            # then the normal PATH search
         return dirs
 
+    # Legacy ABI-1 exports every genuine interception.dll must carry
+    # (v1.0.1 official release included). ABI-10 helpers such as
+    # first_target_device/receive/iterate are NOT required and are
+    # absent from official release DLLs.
+    _REQUIRED_EXPORTS = ("interception_create_context",
+                         "interception_destroy_context",
+                         "interception_first_device",
+                         "interception_next_handle",
+                         "interception_is_keyboard",
+                         "interception_is_mouse",
+                         "interception_send")
+
+    @staticmethod
+    def _has_exports(dll):
+        # getattr on a ctypes WinDLL raises AttributeError for missing
+        # exports, so hasattr answers per name without touching the
+        # driver. Works on any ABI level.
+        return all(hasattr(dll, n) for n in
+                   InterceptionBackend._REQUIRED_EXPORTS)
+
     @classmethod
     def _load_dll(cls):
+        loaded_path = None
         for d in cls._candidate_dirs():
             p = os.path.join(d, "interception.dll") if d else \
                 "interception.dll"
             try:
                 if d and not os.path.isfile(p):
                     continue
-                return ctypes.WinDLL(p)
+                dll = ctypes.WinDLL(p)
+                loaded_path = p if d else "(PATH search)"
             except OSError:
                 continue
+            # A DLL that lacks the real Interception exports is NOT the
+            # Interception library - keep searching (a stale copy can sit
+            # on PATH/System32 ahead of the good one next to the exe).
+            # v8.51 fix: probe LEGACY ABI-1 names only. The official
+            # interception.dll from release v1.0.1 exports nothing else;
+            # probing first_target_device (an ABI-10 helper) rejected
+            # perfectly good official DLLs and every user saw "selected
+            # but not working" even with the driver installed.
+            if cls._has_exports(dll):
+                cls._loaded_path = p if d else "(PATH search)"
+                return dll
+        cls._loaded_path = loaded_path
         return None
 
     @classmethod
@@ -171,18 +214,22 @@ class InterceptionBackend(object):
                 dll.interception_create_context.restype = ctypes.c_void_p
                 ctx = dll.interception_create_context()
                 if ctx:
-                    # wait() would block up to timeout ms; iterate() is
-                    # non-blocking and returns 0 while nothing moved.
-                    dll.interception_iterate.argtypes = [ctypes.c_void_p,
-                                                         ctypes.c_double]
                     dll.interception_destroy_context.argtypes = \
                         [ctypes.c_void_p]
-                    deadline = time.time() + 0.25
-                    while time.time() < deadline:
-                        if dll.interception_iterate(ctx, 0.0):
-                            ok = True
-                            break
-                        time.sleep(0.01)
+                    # Probe driver liveness WITHOUT requiring any device
+                    # input: a short blocking wait wakes idle devices too.
+                    # (iterate() is an ABI-10 helper absent from official
+                    # release DLLs, so it can't be used here.)
+                    dll.interception_wait_with_timeout.restype = ctypes.c_int
+                    dll.interception_wait_with_timeout.argtypes = \
+                        [ctypes.c_void_p, ctypes.c_double]
+                    try:
+                        # Any return >= 0 means the driver answered; the
+                        # call only fails outright if no driver is there.
+                        dll.interception_wait_with_timeout(ctx, 0.15)
+                        ok = True
+                    except Exception:
+                        ok = False
                     dll.interception_destroy_context(ctx)
         except Exception:
             ok = False
@@ -209,9 +256,28 @@ class InterceptionBackend(object):
 
         self._STROKE = STROKE
         dll = self._dll
-        dll.interception_first_target_device.restype = c.c_int
-        dll.interception_first_target_device.argtypes = [c.c_void_p,
-                                                         c.c_int]
+        # v8.50: declare EVERY entry point used below, with restypes as
+        # well as argtypes. Without a restype, ctypes assumes int and
+        # truncates the 64-bit context handle on the first call - the
+        # driver then receives garbage and Interception dies at startup.
+        dll.interception_create_context.restype = c.c_void_p
+        dll.interception_destroy_context.argtypes = [c.c_void_p]
+        # first_target_device exists only on ABI-10 builds (NOT the
+        # official v1.0.1 release DLL). Declare it when present so
+        # _find_mouse can try it as a fast path; absence is fine.
+        if hasattr(dll, "interception_first_target_device"):
+            dll.interception_first_target_device.restype = c.c_int
+            dll.interception_first_target_device.argtypes = [c.c_void_p,
+                                                             c.c_int]
+        dll.interception_first_device.restype = c.c_int
+        dll.interception_first_device.argtypes = [c.c_int]
+        dll.interception_next_handle.restype = c.c_int
+        dll.interception_next_handle.argtypes = [c.c_void_p, c.c_int]
+        dll.interception_is_mouse.restype = c.c_int
+        dll.interception_is_mouse.argtypes = [c.c_int]
+        dll.interception_wait_with_timeout.restype = c.c_int
+        dll.interception_wait_with_timeout.argtypes = [c.c_void_p,
+                                                       c.c_double]
         dll.interception_wait.argtypes = [c.c_void_p, c.c_int,
                                           ctypes.POINTER(STROKE)]
         dll.interception_send.restype = c.c_int
@@ -219,10 +285,27 @@ class InterceptionBackend(object):
                                           ctypes.POINTER(STROKE), c.c_int]
         dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
                                                 c.c_ushort]
-        dll.interception_destroy_context.argtypes = [c.c_void_p]
 
     def _find_mouse(self):
+        # v8.50: first_target_device only reports devices that have ALREADY
+        # sent input since the context was created - a freshly booted or
+        # idle mouse makes it return 0 and the backend wrongly degraded to
+        # Win32 ("driver not installed" even though it was). Interception's
+        # own idiom is wait() with a short timeout, which also wakes idle
+        # devices; fall back to iterating the static device range 1..10.
+        try:
+            self._dll.interception_wait_with_timeout.argtypes = \
+                [ctypes.c_void_p, ctypes.c_double]
+            self._dll.interception_wait_with_timeout(self._context, 0.2)
+        except Exception:
+            pass
         for kind in (15, 14):     # MOUSE then MOUSE_ABSOLUTE
+            # first_target_device is an ABI-10 helper; the official
+            # v1.0.1 release DLL does not export it. Skip the fast path
+            # when absent - the static-range walk below is the legacy
+            # idiom and always works.
+            if not hasattr(self._dll, "interception_first_target_device"):
+                break
             dev = self._dll.interception_first_target_device(
                 self._context, kind)
             if dev > 0:
@@ -232,6 +315,19 @@ class InterceptionBackend(object):
                 except Exception:
                     pass
                 return dev
+        for kind in (15, 14):
+            dev = self._dll.interception_next_handle(
+                self._context, self._dll.interception_first_device(kind))
+            while 0 < dev <= self._INTERCEPTION_MAX_DEVICES:
+                if self._dll.interception_is_mouse(dev):
+                    try:
+                        self._dll.interception_set_filter(
+                            self._context, dev, self._FILTER_ALL)
+                    except Exception:
+                        pass
+                    return dev
+                dev = self._dll.interception_next_handle(
+                    self._context, dev)
         log("Input: Interception found no mouse target device - is the "
             "driver installed (interception.exe install + reboot)? "
             "Using Windows injection.")
@@ -345,6 +441,12 @@ def make_input_backend(cfg):
     """
     choice = str(cfg.get("input_backend", "win32") or "win32").lower()
     if choice == "interception":
+        # For the failure message: did a *valid* Interception DLL load at
+        # all? Probing here is cheap and only runs when the user opted in.
+        try:
+            cls_dll_ok = InterceptionBackend._load_dll() is not None
+        except Exception:
+            cls_dll_ok = False
         try:
             be = InterceptionBackend()
             if be.ok_for_button():
@@ -356,7 +458,19 @@ def make_input_backend(cfg):
         except Exception as exc:
             log("Input: Interception unavailable (%r); using the "
                 "standard Windows method." % (exc,))
-        log("Input: Interception selected but not working (missing "
-            "interception.dll or driver not installed). Using the "
-            "standard Windows method.")
+        where = getattr(InterceptionBackend, "_loaded_path", None)
+        if where is None:
+            why = ("interception.dll was not found next to the program "
+                   "or on PATH")
+        elif not cls_dll_ok:
+            why = ("interception.dll was loaded from %s but it does not "
+                   "export the Interception functions - replace it with "
+                   "the interception.dll from the official v1.0.1 "
+                   "release archive (library/ directory)" % where)
+        else:
+            why = ("interception.dll is fine but the kernel driver did "
+                   "not answer - run 'interception.exe install' from an "
+                   "admin prompt and reboot")
+        log("Input: Interception selected but not working (%s). Using "
+            "the standard Windows method." % why)
     return Win32Backend()
