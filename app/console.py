@@ -154,6 +154,15 @@ def print_help():
     print("    point at the app you work in, press v, and it suggests the")
     print("    accent_soft value tuned to your display and lighting.")
     print("    Set it on the Handler tab ('Accept near-miss shades').")
+    print("  - capture report (console 'p'): if assistance works in normal")
+    print("    windows but fails in a game or hardware-accelerated app, run")
+    print("    it there. BLACK/FROZEN frames mean the capture engine cannot")
+    print("    SEE that window (Desktop Duplication misses overlays/DRM,")
+    print("    mss misses GPU-exclusive content) even though dxcam is")
+    print("    installed fine. Fix: Settings -> Screen capture engine ->")
+    print("    Windows Graphics Capture (pip install windows-capture), or")
+    print("    Compatible mode; then restart. Exclusive-fullscreen games")
+    print("    need borderless-window mode for ANY capturer to see them.")
     print("  - Detection adapts to your screen: dim regions lower their own")
     print("    ink bar (adaptive_threshold) and edges are scored relative to")
     print("    local brightness (luminance_norm), so dark themes work like")
@@ -386,6 +395,17 @@ def windows_main(cfg, identity=None):
 
             elif line in ("s", "status"):
                 print_status(app)
+
+            elif line in ("p", "capture"):
+                # v8.51: capture diagnostics. If assistance works in
+                # normal windows but fails inside a game or hardware-
+                # accelerated app, this shows whether the frames the
+                # engine sees are black/frozen (blind backend) - and
+                # which of dxcam/wgc/mss produced them.
+                try:
+                    print(app._capture.capture_report())
+                except Exception as exc:
+                    print("capture report failed: %r" % (exc,))
 
             elif line in ("h", "help", "?"):
                 print_help()
