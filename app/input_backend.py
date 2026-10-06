@@ -149,6 +149,7 @@ class InterceptionBackend(object):
         self._ctx = ctx              # optional pre-built context (tests)
         self._dll = None
         self._dev = None
+        self._shift = 0              # x2y-style mouse-move coalescing debt
         self._reason = ""            # why init failed (for honest logs)
         if ctx is not None:
             return                 # test double: nothing to load
@@ -876,6 +877,18 @@ class InterceptionBackend(object):
         for _ in range(4):
             dx = max(-self._STEP, min(self._STEP, tx - cx))
             dy = max(-self._STEP, min(self._STEP, ty - cy))
+            # x2y-style coalescing debt: if the driver merged our last
+            # stroke with physical mouse motion, the cursor travelled
+            # FURTHER than requested. Repay that overshoot by shrinking
+            # (or zeroing) this stroke instead of adding to it. The debt
+            # is always opposite in sign to the requested direction.
+            sh = self._shift
+            if sh > 0 and dx < 0:
+                take = min(sh, -dx)
+                dx += take; self._shift -= take
+            elif sh < 0 and dx > 0:
+                take = min(-sh, dx)
+                dx -= take; self._shift += take
             s = self._STROKE()
             s.mouse.type = self._IS_MOUSE_MOVE
             s.mouse.x, s.mouse.y = dx, dy
@@ -885,10 +898,17 @@ class InterceptionBackend(object):
                 return
             time.sleep(0.001)
             try:
-                cx, cy = win32rt.get_cursor_pos()
+                nx, ny = win32rt.get_cursor_pos()
             except Exception:
                 self.note_failure("cursor read")
                 return
+            # detect coalescing on the axis we actually stroked: actual
+            # travel exceeded requested travel in the same direction
+            if dx:
+                real_dx = nx - cx
+                if (real_dx > 0) == (dx > 0) and abs(real_dx) > abs(dx):
+                    self._shift = real_dx - dx
+            cx, cy = nx, ny
             if (cx, cy) == (tx, ty):
                 break
         else:
@@ -911,7 +931,53 @@ class InterceptionBackend(object):
         self._send(s, "button")
         return self.ok_for_button()
 
+    def send_click(self):
+        """One complete synthetic click as a SINGLE two-stroke packet
+        (down+up delivered in one interception_send transaction), with a
+        randomized hold between the transitions. Borrowed from connorabs'
+        osu!mania pixel-trigger engine, which sends tap pairs atomically:
+        one kernel transaction means nothing interleaves between down and
+        up, and the driver's own queue paces the gap instead of Python
+        thread scheduling.
+
+        Returns True if the whole packet went out. False = backend
+        degraded (caller must hand BOTH events to Win32 itself - that is
+        exactly what assist._click does on False, so a mid-call failure
+        can never leave the logical button stuck)."""
+        import random
+        if not self.ok_for_button():
+            return False
+        d = self._STROKE()
+        d.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
+        d.mouse.buttons = 1
+        u = self._STROKE()
+        u.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
+        u.mouse.buttons = 0
+        pair = (self._STROKE * 2)(d, u)
+        ok = self._send_count(pair, 2, "click")
+        # human-ish visible hold so apps that poll button state register it
+        time.sleep(random.uniform(0.015, 0.035))
+        return ok
+
     # -- internals ------------------------------------------------------
+    def _send_count(self, strokes, count, what):
+        """Send `count` strokes in ONE interception_send transaction,
+        under the same lock _send uses."""
+        with self._lock:
+            if self._degraded or self._dev is None:
+                return False
+            try:
+                sent = self._dll.interception_send(
+                    self._context, self._dev,
+                    ctypes.cast(strokes, ctypes.c_void_p), count)
+            except Exception:
+                self.note_failure(what)
+                return False
+            if sent != count:
+                self.note_failure(what + " (partial)")
+                return False
+            return True
+
     def _send(self, stroke, what):
         """Deliver one stroke. Returns True on success. NEVER swallows a
         failure silently: any refused/errored send degrades the backend

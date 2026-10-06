@@ -586,19 +586,37 @@ class App(object):
         """Move the cursor through the active input backend."""
         self._input.move(x, y)
 
+    def _atomic_click(self):
+        """Try to deliver a whole down+up click as one packet through the
+        active backend (Interception sends both strokes in a single
+        kernel transaction - borrowed from connorabs' osu!mania engine).
+        Returns True if the complete click went out. Win32 has no such
+        packet API and returns False, so callers use the classic two
+        transitions. On ANY False nothing was delivered as a pair, so
+        the caller's per-event _button path still guards each half."""
+        fn = getattr(self._input, "send_click", None)
+        if fn is None:
+            return False
+        try:
+            return bool(fn())
+        except Exception:
+            return False
+
     def send_click(self, x, y, double=False):
         self._warp(x, y)
         time.sleep(0.012)
 
-        self._button(True)
-        time.sleep(0.015)
-        self._button(False)
-
-        if double:
-            time.sleep(0.055)
+        if not self._atomic_click():
             self._button(True)
             time.sleep(0.015)
             self._button(False)
+
+        if double:
+            time.sleep(0.055)
+            if not self._atomic_click():
+                self._button(True)
+                time.sleep(0.015)
+                self._button(False)
 
     def _follow_may_learn(self, target):
         """
