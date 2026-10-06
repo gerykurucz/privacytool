@@ -217,7 +217,7 @@ STRINGS = {
             "auch die Aktion aus. An: Die Aktion feuert weiterhin "
             "überall, aber die Taste tippt nicht mehr.",
         "desc.capture_backend": "Wie der Bildschirm fotografiert "
-            "wird. Automatisch wählt das schnellste funktionierende; "
+            "wird. Automatisch nutzt die Kompatibel-Methode und sieht damit fast alle Fenster; "
             "Kompatibel funktioniert immer, auch mit Remotedesktop "
             "und virtuellen Maschinen. Gilt nach Neustart.",
         "desc.color_adapt": "Jedes Element wird vor dem Abgleich am "
@@ -889,7 +889,7 @@ STRINGS = {
             "aussehen (empfohlen)",
         "val.capture_backend.auto": "Automatisch - schnellstes mit "
             "sicherem Fallback",
-        "val.capture_backend.dxcam": "Desktop Duplication - "
+        "val.capture_backend.dxcam": "Desktop Duplication - sehr schnell, aber "
             "schnellstes auf den meisten PCs",
         "val.capture_backend.mss": "Kompatibel - funktioniert immer "
             "(Remote Desktop, VMs)",
@@ -1008,7 +1008,7 @@ STRINGS = {
             "közben is kiváltja a műveletét. Be: a művelet továbbra "
             "is mindenhol elsül, de a gomb többé nem gépel.",
         "desc.capture_backend": "Hogyan fényképeződik a képernyő. Az "
-            "automatikus a leggyorsabb működőt választja; a "
+            "automatikus a kompatibilis módot használja, amely majdnem minden ablakot lát; a "
             "kompatibilis mindig működik, távoli asztalnál és "
             "virtuális gépeken is. Újraindítás után lép életbe.",
         "desc.color_adapt": "Minden elem a saját hátteréhez "
@@ -1786,7 +1786,7 @@ STRINGS = {
             "acción sigue disparándose en todas partes, pero la "
             "tecla ya no escribe.",
         "desc.capture_backend": "Cómo se fotografía la pantalla. "
-            "Automático elige el más rápido que funcione; Compatible "
+            "Automático usa el método compatible, que ve casi todas las ventanas; Compatible "
             "funciona siempre, incluso en Escritorio remoto y "
             "máquinas virtuales. Se aplica al reiniciar.",
         "desc.color_adapt": "Cada elemento se equilibra en blancos "
@@ -2575,7 +2575,7 @@ STRINGS = {
             "action. Oui : l'action se déclenche toujours partout, "
             "mais la touche ne s'écrit plus.",
         "desc.capture_backend": "Comment l'écran est photographié. "
-            "Automatique prend le plus rapide qui marche ; "
+            "Automatique utilise la méthode compatible, qui voit presque toutes les fenêtres ; "
             "Compatible marche toujours, y compris Bureau à distance "
             "et machines virtuelles. Appliqué au redémarrage.",
         "desc.color_adapt": "Chaque élément est équilibré en blancs "
@@ -3382,7 +3382,7 @@ STRINGS = {
             "wyzwoli akcję. Wł.: akcja nadal działa wszędzie, ale "
             "klawisz nie pisze.",
         "desc.capture_backend": "Jak fotografowany jest ekran. "
-            "Automatycznie wybiera najszybszy działający; "
+            "Automatycznie używa metody zgodnej, która widzi prawie wszystkie okna; "
             "Kompatybilny działa zawsze, także w Pulpicie zdalnym i "
             "maszynach wirtualnych. Obowiązuje po ponownym "
             "uruchomieniu.",
@@ -4141,7 +4141,7 @@ STRINGS = {
             "фразы тоже вызовет действие. Вкл: действие срабатывает "
             "везде, но клавиша больше не печатает.",
         "desc.capture_backend": "Как фотографируется экран. "
-            "Автоматически выбирает самый быстрый работающий; "
+            "Автоматически использует совместимый способ, который видит почти все окна; "
             "Совместимый работает всегда, включая удалённый рабочий "
             "стол и виртуальные машины. Действует после перезапуска.",
         "desc.color_adapt": "Каждый элемент перед сравнением "
@@ -4848,7 +4848,7 @@ STRINGS = {
             "毫秒），让程序先看到高亮。120 适合大多数窗口。",
         "desc.block_bound_keys": "关（默认）：不带 Ctrl/Alt/Shift 的快捷键（如 1 或 "
             "V）在所有程序中生效，并且照常输入，因此句子中间按下也会触发其动作。开：动作仍然随处触发，但该键不再输入。",
-        "desc.capture_backend": "如何拍摄屏幕。自动选择最快的可用方式；兼容式始终可用，包括远程桌面与虚拟机。重启后生效。",
+        "desc.capture_backend": "如何拍摄屏幕。自动使用兼容方式，可看到几乎所有窗口；兼容式始终可用，包括远程桌面与虚拟机。重启后生效。",
         "desc.color_adapt": "每个元素在匹配前都按自身背景做白平衡，这样夜灯和主题偏色就不会把您的颜色推出容差。仅在与未自适应匹配器对比时关闭。",
         "desc.contrast_threshold": "更低会找到更淡的目标（也更多噪声）；更高则需要更清晰的边缘。",
         "desc.default": "将鼠标悬停在设置名称上可查看它的作用。",
@@ -5255,7 +5255,7 @@ STRINGS = {
             "のないショートカット（1 や V "
             "など）はすべてのアプリで効き、かつ通常どおり入力されます。つまり文中で押すと動作も発動します。オン: "
             "動作は引き続きどこでも発動しますが、キーは入力されません。",
-        "desc.capture_backend": "画面の撮影方法。自動は最速の動くものを選択。互換はリモートデスクトップや仮想マシンでも常に動作。再起動後に有効。",
+        "desc.capture_backend": "画面の撮影方法。自動は互換方式を使用し、ほぼすべてのウィンドウを捉えます。互換はリモートデスクトップや仮想マシンでも常に動作。再起動後に有効。",
         "desc.color_adapt": "各要素は照合前に自身の背景でホワイトバランスを取るので、夜間モードやテーマの色かぶりであなたの色が許容範囲から外れなくなります。未適応の照合との比較のためだけに切ってください。",
         "desc.contrast_threshold": "低くすると淡い対象まで発見（ノイズも増）、高くするとよりくっきりした縁を要求。",
         "desc.default": "設定名にカーソルを合わせると説明が表示されます。",
@@ -5701,7 +5701,7 @@ STRINGS = {
         "desc.block_bound_keys": "끔(기본): Ctrl/Alt/Shift 없는 단축키(예: 1, "
             "V)는 모든 프로그램에서 작동하고 입력도 그대로 됩니다. 즉 문장 중간에 눌러도 동작이 발동합니다. "
             "켬: 동작은 어디서나 발동하지만 키는 입력되지 않습니다.",
-        "desc.capture_backend": "화면을 찍는 방법. 자동은 작동하는 것 중 가장 빠른 것. "
+        "desc.capture_backend": "화면을 찍는 방법. 자동은 호환 방식을 사용하며 거의 모든 창을 봅니다. "
             "호환은 원격 데스크톱과 가상 머신을 포함 항상 작동. 재시작 후 반영.",
         "desc.color_adapt": "각 항목은 비교 전에 자신의 배경에 맞춰 화이트밸런스를 조정하므로 야간 "
             "조명과 테마 색상이 내 색상을 허용 범위 밖으로 밀어내지 않습니다. 적응되지 않은 비교기와 비교할 "
@@ -6242,7 +6242,7 @@ STRINGS = {
             "l'azione scatta comunque ovunque, ma il tasto non "
             "scrive più.",
         "desc.capture_backend": "Come si fotografa lo schermo. "
-            "Automatico sceglie il più rapido che funziona; "
+            "Automatico usa il metodo compatibile, che vede quasi tutte le finestre; "
             "Compatibile funziona sempre, incluso Desktop remoto e "
             "macchine virtuali. Vale dopo il riavvio.",
         "desc.color_adapt": "Ogni elemento viene bilanciato sul "
@@ -7030,7 +7030,7 @@ STRINGS = {
             "continua a disparar em todo o lado, mas a tecla já não "
             "escreve.",
         "desc.capture_backend": "Como o ecrã é fotografado. "
-            "Automático escolhe o mais rápido que funcione; "
+            "Automático usa o método compatível, que vê quase todas as janelas; "
             "Compatível funciona sempre, incluindo Ambiente de "
             "trabalho remoto e máquinas virtuais. Vale após "
             "reiniciar.",
@@ -7800,7 +7800,7 @@ STRINGS = {
             "zin drukken triggert ook de actie. Aan: de actie vuurt "
             "nog steeds overal, maar de toets typt niet meer.",
         "desc.capture_backend": "Hoe het scherm gefotografeerd "
-            "wordt. Automatisch kiest de snelste die werkt; "
+            "wordt. Automatisch gebruikt de compatibele methode, die bijna alle vensters ziet; "
             "Compatibel werkt altijd, ook bij Remote Desktop en "
             "virtuele machines. Geldt na herstart.",
         "desc.color_adapt": "Elk element wordt vóór het vergelijken "
@@ -8569,7 +8569,7 @@ STRINGS = {
             "yani cümle ortasında basmak eylemini de tetikler. Açık: "
             "eylem yine her yerde tetiklenir, ama tuş artık yazmaz.",
         "desc.capture_backend": "Ekranın nasıl fotoğraflandığı. "
-            "Otomatik, çalışan en hızlısını seçer; Uyumlu, Uzak "
+            "Otomatik, neredeyse tüm pencereleri gören uyumlu yöntemi kullanır; Uyumlu, Uzak "
             "Masaüstü ve sanal makineler dahil her zaman çalışır. "
             "Yeniden başlatmadan sonra geçerli.",
         "desc.color_adapt": "Her öğe karşılaştırmadan önce kendi "
@@ -9324,7 +9324,7 @@ STRINGS = {
             "також запускає її дію. Увім: дія все одно спрацьовує "
             "усюди, але клавіша більше не друкує.",
         "desc.capture_backend": "Як фотографується екран. "
-            "Автоматично обирає найшвидший робочий; Сумісний працює "
+            "Автоматично використовує сумісний спосіб, який бачить майже всі вікна; Сумісний працює "
             "завжди, зокрема у віддаленому робочому столі та "
             "віртуальних машинах. Діє після перезапуску.",
         "desc.color_adapt": "Кожен елемент перед порівнянням "
@@ -10083,7 +10083,7 @@ STRINGS = {
             "chake. Washa: kitendo bado huwasha kila mahali, lakini "
             "kifungo hakichapi tena.",
         "desc.capture_backend": "Jinsi skrini inavyopigwa picha. "
-            "Otomatiki huchagua ya haraka zaidi inayofanya kazi; "
+            "Otomatiki hutumia njia endelevu inayoona karibu dirisha zote; "
             "Inayooana hufanya kazi daima, ikiwemo Eneo la Kazi la "
             "Mbali na mashine pepe. Hutumika baada ya kuanzisha "
             "upya.",

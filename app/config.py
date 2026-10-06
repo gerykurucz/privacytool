@@ -101,8 +101,14 @@ DEFAULT_CONFIG = {
     "luminance_norm": True,
 
     # Screen capture backend.
-    # "auto"  = prefer dxcam (Desktop Duplication), fall back to mss.
-    # "dxcam" / "mss" = force one library (mss always remains as fallback).
+    # "auto"  = mss (GDI) first - it sees every ordinary window,
+    #           including games and hardware-accelerated apps that
+    #           Desktop Duplication cannot observe. (v8.52: auto used
+    #           to prefer dxcam; stale/black frames in live tests were
+    #           the result.)
+    # "dxcam" = force Desktop Duplication - fastest grabs, but blind to
+    #           some game/fullscreen swapchains; mss stays as fallback.
+    # "mss"   / "wgc" = force GDI / Windows.Graphics.Capture.
     "capture_backend": "auto",
 
     # Click DELIVERY backend (v8.50). Opt-in secondary option:
