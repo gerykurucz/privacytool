@@ -513,10 +513,14 @@ META = {
                       "cursor on it for a moment - the cursor stays\n"
                       "parked on it and follows it around, even when\n"
                       "the item moves (a scrolling plane, an animated\n"
-                      "panel). It never fights you: holding any button\n"
-                      "pauses it, and it lets go about a second after\n"
-                      "the item disappears. Turn on \"Lead moving\n"
-                      "items\" too for smooth fast chasing.",
+                      "panel). No accent colour needed: without one it\n"
+                      "locks on straight away to the best high-\n"
+                      "contrast item; with a colour set it waits for\n"
+                      "the brief dwell first. It never fights you:\n"
+                      "holding any button pauses it, and it lets go\n"
+                      "about a second after the item disappears. Turn\n"
+                      "on \"Lead moving items\" too for smooth fast\n"
+                      "chasing.",
                       "bool", None),
     "follow_learn": ("What the memory may learn",
                      "Only items in my colour: a misclick that snapped "

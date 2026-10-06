@@ -205,6 +205,13 @@ DEFAULT_CONFIG = {
     # Combine with "Lead moving items" for smooth fast chasing.
     "center_follow": False,
 
+    # Colour-stage scan budget in milliseconds (vision.scan_region).
+    # Items whose colour could not be checked before this deadline fail
+    # closed for accent_only/exclude_color and are reported in the log.
+    # 350 ms is generous enough that a radius-400 busy screen finishes
+    # scoring; lower it (min 60) if scans ever feel late on slow machines.
+    "scan_budget_ms": 350,
+
     # 3D snap follower: track position AND scale with a Kalman filter
     # instead of the legacy linear fit. Outliers are rejected per scan
     # (one bad frame damps the step instead of blinding the track),
@@ -682,6 +689,13 @@ class Config:
         "stall_pause_seconds": (0.0, 3.0),
         "on_target_dist": (0, 100),
         "motion_lead_ms": (0, 300),
+        # Colour-stage scan budget. The old hard-coded 120 ms deadline
+        # cut the colour scoring short on busy screens ("Colour stage
+        # cut short" log spam) so accent_only/exclude_color items failed
+        # closed - visible especially with auto-click's wide multi-accent
+        # lists and radius 400. Raising it only lets more items get
+        # scored; clicks never wait longer than the scan actually takes.
+        "scan_budget_ms": (60, 2000),
         # The snap offset is deliberately bounded: it re-aims the click
         # within the neighbourhood of the item, it must never be able to
         # send a click across the screen on its own.

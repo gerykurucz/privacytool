@@ -428,6 +428,10 @@ class App(object):
                     origin[0], origin[1],
                     float(self.cfg.get("follow_seconds", 20))
                 )
+            # The centre-follow cycle passes feed_center=False because it
+            # consumes res.target.sig right below; every other caller
+            # (click workers included) gets the sighting armed here.
+            feed_center = track is not False
             try:
                 res = scan_region(img, cx, cy, self.cfg.values, cap,
                                   follow_ctx=follow_ctx,
@@ -447,27 +451,7 @@ class App(object):
                 # at the pointer); no abs_x attribute exists.
                 ax = origin[0] + res.target.dx
                 ay = origin[1] + res.target.dy
-                track = self._track
-                if track is not None:
-                    now = time.perf_counter()
-                    track.append((now, ax, ay))
-                    while track and now - track[0][0] > 0.6:
-                        track.popleft()
-                    try:
-                        area = float(getattr(res.target, "area", 0) or 0)
-                        if area > 0.0:
-                            self._tracker.update(
-                                now, (ax, ay, math.sqrt(area)))
-                    except Exception:
-                        pass
-                # "Keep the cursor on it": any scan that found an item
-                # inside the watched square arms/refreshes the centre
-                # follow - both the click workers and the follow worker
-                # itself call scan_near, so a moving plane keeps the
-                # lock alive without needing another click. The gate
-                # lives in run_follow_worker (switch, buttons, pick
-                # radius), so arming here stays cheap and safe.
-                if bool(self.cfg.get("center_follow", False)):
+                if feed_center and bool(self.cfg.get("center_follow", False)):
                     prev = self._center_follow
                     if (prev is not None
                             and math.hypot(ax - prev["x"],
@@ -481,6 +465,21 @@ class App(object):
                         "when": time.perf_counter(),
                         "misses": 0,
                     }
+                # Feed the motion-lead history from EVERY centre scan,
+                # including the follow cycle's own (track=False): a
+                # chase without clicks must still keep the Kalman/linear
+                # track fresh or "Lead moving items" goes stale mid-flight.
+                now = time.perf_counter()
+                self._track.append((now, ax, ay))
+                while self._track and now - self._track[0][0] > 0.6:
+                    self._track.popleft()
+                try:
+                    area = float(getattr(res.target, "area", 0) or 0)
+                    if area > 0.0:
+                        self._tracker.update(
+                            now, (ax, ay, math.sqrt(area)))
+                except Exception:
+                    pass
                 return res.target
             return None
 
@@ -1776,9 +1775,10 @@ class App(object):
         now = time.perf_counter()
 
         if cf is None or (now - cf["when"]) > 1.0:
-            if cf is not None:
+            stale = cf is not None
+            if stale:
                 # the chase went blind for a whole second: let go, and
-                # require a fresh dwell before locking onto anything
+                # require a fresh sighting before locking onto anything
                 self._center_follow = None
             # nothing armed (or the sighting went stale): try to pick
             # from where the cursor currently sits inside the box
@@ -1789,11 +1789,28 @@ class App(object):
                 float(self.cfg.get("radius", 150)) * self.dpi_scale))) // 2
             x, y = get_cursor_pos()
             if abs(x - mx) > half or abs(y - my) > half:
+                # cursor left the watched square: any dwell progress is
+                # over a different neighbourhood now - start clean
+                self._pick_at = None
                 return False
+            if stale:
+                # a just-expired chase must not re-acquire the very same
+                # pixel it lost within one cycle; give the dwell gate
+                # below its required head start
+                self._pick_at = None
             before = self._center_follow
-            target = self.scan_near(x, y, None, None)
+            # track=False: this cycle arms/refreshes sightings itself;
+            # scan_near must not double-write _center_follow here.
+            target = self.scan_near(x, y, None, False)
             if target is not None:
-                ax, ay = x + target.dx, y + target.dy
+                # dx/dy are REGION-relative (see scan_near's centre
+                # branch: abs = origin + d). The capture is anchored on
+                # the screen middle, NOT the cursor - using x+dx here
+                # pointed the chase at wherever the pointer happened to
+                # sit inside the box, which is why the cursor never
+                # actually moved onto the item.
+                ax = mx + target.dx
+                ay = my + target.dy
                 # did the SCAN arm a sighting of its own (a click
                 # worker's snap refreshed it a moment ago)? then the
                 # chase starts instantly - no dwell required.
@@ -1818,8 +1835,36 @@ class App(object):
                     log("Centre follow: keeping the cursor on the "
                         "picked item.")
                 else:
-                    self._pick_at = (ax, ay)
-                    self._pick_at_time = now
+                    anchors = vision._parse_accents(
+                        self.cfg.get("accent_color", "off"))
+                    mem = self.follow
+                    has_anchor = bool(anchors) \
+                        or (mem.sig is not None and mem.when > 0.0)
+                    if not has_anchor and self._pick_at is None:
+                        # No colour intent anywhere (accent off, nothing
+                        # snapped yet to remember): the chase still has
+                        # a job. The scan already ranked items by
+                        # CONTRAST - that is the primary mechanism;
+                        # colour only ever refines it. Arm instantly on
+                        # the first sighting so even a single-frame
+                        # popup gets chased, and let the miss-expiry
+                        # below release the lock just as quickly if the
+                        # sighting was noise.
+                        self._center_follow = {
+                            "x": ax, "y": ay, "sig": target.sig,
+                            "when": now, "misses": 0,
+                        }
+                        log("Centre follow: keeping the cursor on the "
+                            "item (contrast tracking - no accent "
+                            "colour set).")
+                    else:
+                        # A colour anchor exists but this specific item
+                        # must prove itself: park on the candidate for
+                        # ~0.3 s (two matching sightings) before arming,
+                        # so the cursor never jumps onto something the
+                        # user merely passed over.
+                        self._pick_at = (ax, ay)
+                        self._pick_at_time = now
             else:
                 self._pick_at = None
             return True
@@ -1914,16 +1959,28 @@ class App(object):
 
                 accent = lock.get("accent")
                 if not accent:
-                    time.sleep(0.05)
-                    continue
+                    # The pick failed to sample a colour (the cursor sat
+                    # on an edge or the capture refused). A follow with
+                    # no colour still has a job: stay on the high-
+                    # contrast item nearest where the user grabbed -
+                    # colour is the preferred anchor, contrast the
+                    # fallback, never a reason to do nothing.
+                    accent = None
 
                 x, y = get_cursor_pos()
                 radius = self.radius_px()
                 img, cx, cy, _origin, _edges = self.grab_around(x, y, radius)
                 if img is not None:
                     cfgv = dict(self.cfg.values)
-                    cfgv["accent_color"] = accent
-                    cfgv["accent_only"] = True
+                    if accent:
+                        cfgv["accent_color"] = accent
+                        cfgv["accent_only"] = True
+                    else:
+                        # No colour to aim at: plain contrast ranking,
+                        # which is exactly how every other scan behaves
+                        # without an accent configured.
+                        cfgv["accent_color"] = "off"
+                        cfgv["accent_only"] = False
                     res = vision.scan_region(img, cx, cy, cfgv, radius)
                     if res.kind == "target" and res.target is not None:
                         lock["misses"] = 0
