@@ -45,12 +45,24 @@ import time
 from core import IS_WINDOWS, log
 
 
+class _Timeout(Exception):
+    """Raised by _call_with_timeout when the callee never answered."""
+
+
 def _call_with_timeout(fn, timeout, *args):
-    """Run fn(*args) on a daemon thread; return its result, or None if it
-    has not answered within `timeout` seconds. The ctypes call itself is
-    never cancellable, so a wedged driver leaves one parked daemon
-    thread behind - harmless for a GUI process that would otherwise hang
-    at startup forever."""
+    """Run fn(*args) on a daemon thread; RETURN its result, or raise
+    _Timeout if it has not answered within `timeout` seconds.
+
+    v8.61: this used to signal a timeout by returning None - which is
+    indistinguishable from a function that legitimately answers "nothing
+    found". Our discovery walk returns None exactly that way, so every
+    empty answer was mis-reported as "device discovery did not return
+    within 8 s (driver installed but wedged)" even when the driver had
+    answered instantly and simply listed no mouse. Raising makes the two
+    cases impossible to confuse. The ctypes call itself is never
+    cancellable, so a genuinely wedged driver still leaves one parked
+    daemon thread behind - harmless for a GUI process that would
+    otherwise hang at startup forever."""
     box = {}
 
     def run():
@@ -63,7 +75,7 @@ def _call_with_timeout(fn, timeout, *args):
     t.start()
     t.join(timeout)
     if t.is_alive():
-        return None                   # timed out: driver did not answer
+        raise _Timeout("did not return within %.0f s" % timeout)
     if "error" in box:
         raise box["error"]
     return box.get("result")
@@ -147,10 +159,10 @@ class InterceptionBackend(object):
             # to the exe. A timed-out probe parks a harmless daemon
             # thread instead of parking the whole app.
             load = _call_with_timeout(self._load_dll, 8.0)
-            if load is None:
-                self._reason = ("loading interception.dll did not return "
-                                "within 8 s (kernel driver not answering "
-                                "at DLL-load time)")
+            if not load:
+                # legitimately "no DLL anywhere" (never a timeout -
+                # those raise _Timeout now): stay silent here and let
+                # make_input_backend() print the accurate one-liner.
                 self._degraded = True
                 return
             self._dll, frozen = load
@@ -167,11 +179,10 @@ class InterceptionBackend(object):
             ctx = _call_with_timeout(
                 self._dll.interception_create_context, 8.0)
             if not ctx:
-                self._reason = ("interception_create_context did not "
-                                "return within 8 s (the driver is "
-                                "installed but not answering - reinstall "
-                                "with 'interception.exe install' from an "
-                                "admin prompt and reboot)")
+                self._reason = ("interception_create_context returned no "
+                                "context - reinstall the driver with "
+                                "'interception.exe install' from an admin "
+                                "prompt and reboot")
                 self._degraded = True
                 return
             self._context = ctx
@@ -193,11 +204,6 @@ class InterceptionBackend(object):
             # traffic at all. So: discover first; only wake devices via
             # a short bounded wait if the table says there are none.
             found = _call_with_timeout(self._find_mouse, 8.0)
-            if found is None:
-                self._reason = ("device discovery did not return within "
-                                "8 s (driver installed but wedged)")
-                self._degraded = True
-                return
             self._dev = found
             if self._dev is None:
                 # Cold-boot / idle case: ask the driver to attach to the
@@ -214,13 +220,53 @@ class InterceptionBackend(object):
                         pass
                     return self._find_mouse()
 
-                found = _call_with_timeout(_wake_and_walk, 4.0)
-                self._dev = found
+                try:
+                    self._dev = _call_with_timeout(_wake_and_walk, 4.0)
+                except _Timeout:
+                    self._dev = None
             if self._dev is None:
+                # v8.61 DIAGNOSTIC PROBE: before blaming the driver's
+                # table, send one zero-effect stroke (type 0 = carries
+                # no button or motion state) to handle 1 and read the
+                # return value. This distinguishes "the library loaded
+                # but its handles never reached the kernel driver"
+                # (send returns 0 - e.g. a non-Interception DLL with
+                # same-named stub exports, or a driver whose control
+                # device could not be opened despite create_context
+                # succeeding) from "the driver answers but genuinely
+                # lists no mouse". Without this, both cases print the
+                # same message and users keep reinstalling a perfectly
+                # fine driver.
+                probe = "?"
+                try:
+                    st = self._STROKE()
+                    st.mouse.type = 0
+                    n = self._dll.interception_send(self._context, 1,
+                                                    ctypes.byref(st), 1)
+                    probe = ("interception_send(handle 1) returned %r"
+                             % (n,))
+                except Exception as exc:
+                    probe = "interception_send raised %r" % (exc,)
                 self._reason = ("the driver answered but reports no mouse "
                                 "device (is the mouse connected through a "
-                                "driver the filter does not see?)")
+                                "driver the filter does not see? probe: "
+                                "%s)" % probe)
+                log("Input: Interception found no mouse device. Probe: %s. "
+                    "If the probe says it returned 0, the loaded DLL is "
+                    "not really talking to the kernel driver - replace it "
+                    "with interception.dll from the official v1.0.1 "
+                    "archive (library/ folder). Using Windows injection."
+                    % probe)
                 self._degraded = True
+        except _Timeout as exc:
+            # v8.61: real timeouts now raise instead of returning None,
+            # so this branch can only mean a call genuinely hung - never
+            # a legitimate "nothing found" answer that used to be
+            # mislabelled "driver installed but wedged".
+            log("Input: Interception init timed out (%s); using Windows "
+                "injection instead." % (exc,))
+            self._reason = str(exc)
+            self._degraded = True
         except Exception as exc:
             log("Input: Interception init failed (%r); using Windows "
                 "injection instead." % (exc,))
@@ -516,14 +562,16 @@ class InterceptionBackend(object):
     def _load_dll_probe(cls):
         """Timeout-safe wrapper around _load_dll for callers that must
         never block (the GUI thread). Returns (dll_or_None, frozen);
-        (None, True) also means 'the load call itself hung'."""
+        (None, True) also means 'the load call itself hung'. v8.61:
+        timeouts now raise _Timeout instead of returning None, so the
+        two cases are told apart properly."""
         if not IS_WINDOWS:
             return None, False
-        out = _call_with_timeout(cls._load_dll, 8.0)
-        if out is None:
+        try:
+            return _call_with_timeout(cls._load_dll, 8.0)
+        except _Timeout:
             cls._loaded_path = getattr(cls, "_loaded_path", None)
             return None, True          # hung inside loader/DllMain
-        return out
 
     @classmethod
     def available(cls):
@@ -544,8 +592,11 @@ class InterceptionBackend(object):
             dll, frozen = cls._load_dll_probe()
             if dll is not None and not frozen:
                 dll.interception_create_context.restype = ctypes.c_void_p
-                ctx = _call_with_timeout(
-                    dll.interception_create_context, 6.0)
+                try:
+                    ctx = _call_with_timeout(
+                        dll.interception_create_context, 6.0)
+                except _Timeout:
+                    ctx = None
                 if ctx:
                     dll.interception_destroy_context.argtypes = \
                         [ctypes.c_void_p]
@@ -572,7 +623,10 @@ class InterceptionBackend(object):
                                     continue
                             return False
 
-                        ok = bool(_call_with_timeout(_walk, 6.0))
+                        try:
+                            ok = bool(_call_with_timeout(_walk, 6.0))
+                        except _Timeout:
+                            ok = False
                     else:
                         dll.interception_wait_with_timeout.restype = \
                             ctypes.c_int
