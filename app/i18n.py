@@ -11010,9 +11010,15 @@ def register_keys(keys):
 def coverage(code):
     """0..1: share of the registered keys this locale actually has.
     English is the source of truth: whatever it does not carry, the GUI
-    falls back to (META labels, descriptions), so it is always full."""
-    if code == FALLBACK or not _ALL_KEYS:
+    falls back to (META labels, descriptions), so it is always full.
+    v8.67: before register_keys() runs there is no key universe to
+    measure - report 0.0 (NOT complete) instead of the old misleading
+    1.0, which made every locale look fully translated and offered the
+    entire language list to anything asking during early startup."""
+    if code == FALLBACK:
         return 1.0
+    if not _ALL_KEYS:
+        return 0.0
     cat = STRINGS.get(code, {})
     hit = sum(1 for k in _ALL_KEYS if k in cat)
     return hit / float(len(_ALL_KEYS))

@@ -112,6 +112,12 @@ class App(object):
         # several clicks in flight without losing the exactly-once
         # safety net for any of them.
         self.pending_classics = []
+        # v8.67: the hook thread appends/marks/removes while the click
+        # worker removes and _emergency_release swaps the whole list -
+        # list.remove() is search-then-shift, not atomic across threads.
+        # GIL luck was load-bearing; every mutation goes through this
+        # lock now (never held across reinject/sleep calls).
+        self._pending_lock = threading.Lock()
 
         self.worker_active = False
         self.scanner_dead = False
@@ -165,6 +171,7 @@ class App(object):
         self._hk_always = []
         self.local_binds = []
         self._local_map = {}          # vk -> action id (pass-through keys)
+        self._local_combos = set()    # (0, vk) mirror for collision checks
         self._key_held = set()        # repeat filtering for the key hook
         self.input_focused = False    # true while a GUI text field has focus
         self.key_hook = None
@@ -462,6 +469,11 @@ class App(object):
                     self._center_follow = {
                         "x": ax, "y": ay,
                         "sig": res.target.sig,
+                        # v8.67: SnapTarget.area must ride along - sig
+                        # is a plain HSV tuple, so the follow cycle's
+                        # tracker feed had nothing else to read and was
+                        # dead code (motion lead went stale mid-chase).
+                        "area": float(getattr(res.target, "area", 0) or 0),
                         "when": time.perf_counter(),
                         "misses": 0,
                     }
@@ -733,8 +745,9 @@ class App(object):
         worker is active - if one is, the job is in flight and its state
         has not been attached yet, so returning it would duplicate.
         """
-        pending = self.pending_classics
-        self.pending_classics = []
+        with self._pending_lock:            # v8.67: atomic swap
+            pending = self.pending_classics
+            self.pending_classics = []
         for entry in pending:
             if entry.get("up"):
                 continue          # the physical UP already reached Windows
@@ -762,10 +775,11 @@ class App(object):
             if item[0] == "classic":
                 entry = item[4] if len(item) > 4 else None
                 if entry is not None:
-                    try:
-                        self.pending_classics.remove(entry)
-                    except ValueError:
-                        pass
+                    with self._pending_lock:    # v8.67
+                        try:
+                            self.pending_classics.remove(entry)
+                        except ValueError:
+                            pass
                 self.reinject_click(item[1], item[2])
                 log("Queued click returned safely.")
 
@@ -1058,10 +1072,11 @@ class App(object):
             if kind == "classic" and entry is not None:
                 # Job done (delivered, returned or abandoned): its
                 # suppressed-press record is no longer needed.
-                try:
-                    self.pending_classics.remove(entry)
-                except ValueError:
-                    pass
+                with self._pending_lock:        # v8.67
+                    try:
+                        self.pending_classics.remove(entry)
+                    except ValueError:
+                        pass
 
     def make_hook_proc(self):
         def proc(nCode, wParam, lParam):
@@ -1200,10 +1215,11 @@ class App(object):
                             # affected by this.
                             rapid = bool(self.cfg.get("rapid_click_snap",
                                                       False))
-                            un_upped = any(
-                                not e.get("up")
-                                for e in self.pending_classics
-                            )
+                            with self._pending_lock:   # v8.67
+                                un_upped = any(
+                                    not e.get("up")
+                                    for e in self.pending_classics
+                                )
                             if (
                                 mode == 1
                                 and armed
@@ -1214,7 +1230,8 @@ class App(object):
                             ):
                                 entry = {"x": info.pt.x, "y": info.pt.y,
                                          "up": False, "state": None}
-                                self.pending_classics.append(entry)
+                                with self._pending_lock:  # v8.67
+                                    self.pending_classics.append(entry)
                                 self.click_q.put(
                                     ("classic", info.pt.x, info.pt.y,
                                      now, entry)
@@ -1497,6 +1514,14 @@ class App(object):
             self.stop_playback()
             return
 
+        # v8.67: a stop press sets _play_cancel but the worker only
+        # notices between steps - _play_busy can still be True for a
+        # moment. Clearing the event here would un-cancel that dying
+        # job AND queue a second one, so the user's stop silently did
+        # nothing twice over. Respect a pending cancel: let the old
+        # job die first, then play fresh.
+        if self._play_cancel.is_set():
+            self.macro_q.put(("flush-cancel", None, None))
         self._play_cancel.clear()
         self.macro_q.put(("rec", rec["steps"], "loop" if loop else "once"))
         self._play_rid = rec["id"]
@@ -1584,6 +1609,17 @@ class App(object):
                     inject_combo(amods, avk)
                 except Exception as exc:
                     log("macro inject error: %r" % (exc,))
+                continue
+
+            if job[0] == "flush-cancel":
+                # v8.67 barrier: queued by _start_playback when a stop
+                # press left _play_cancel set. The worker is single-
+                # threaded, so everything queued before this marker
+                # (the dying job) has already run; clearing here cannot
+                # un-cancel it. Without the barrier, play-after-stop
+                # cleared the event out from under the still-running
+                # job and replayed it.
+                self._play_cancel.clear()
                 continue
 
             if job[0] == "rec":
@@ -1855,6 +1891,7 @@ class App(object):
                     # the user parked the cursor on it - arm the chase
                     self._center_follow = {
                         "x": ax, "y": ay, "sig": target.sig,
+                        "area": float(getattr(target, "area", 0) or 0),
                         "when": now, "misses": 0,
                     }
                     self._pick_at = None
@@ -1878,6 +1915,7 @@ class App(object):
                         # sighting was noise.
                         self._center_follow = {
                             "x": ax, "y": ay, "sig": target.sig,
+                            "area": float(getattr(target, "area", 0) or 0),
                             "when": now, "misses": 0,
                         }
                         log("Centre follow: keeping the cursor on the "
@@ -1933,8 +1971,12 @@ class App(object):
         while self._track and now - self._track[0][0] > 0.6:
             self._track.popleft()
         try:
-            sig = cf.get("sig")
-            area = float(getattr(sig, "area", 0) or 0) if sig else 0.0
+            # v8.67: read cf["area"] (stored by every arming site).
+            # The old code did getattr(sig, "area", 0) - sig is a plain
+            # HSV tuple, so that was always 0 and this feed never ran:
+            # during a click-free chase the Kalman track went stale and
+            # "Lead moving items" lagged exactly as warned above.
+            area = float(cf.get("area", 0) or 0)
             if area > 0.0:
                 self._tracker.update(now, (cf["x"], cf["y"],
                                            math.sqrt(area)))
@@ -2350,6 +2392,12 @@ class App(object):
         self._hk_always = always
         self.local_binds = local
         self._local_map = {vk: hid for hid, vk in local}
+        # v8.67: the macro-collision check below compares (mods, vk)
+        # tuples; _local_map is keyed by bare VK ints, so a tuple could
+        # NEVER be found in it and pass-through single-key collisions
+        # went unlogged. Mirror the local table as (0, vk) pairs -
+        # pass-through binds carry no modifiers by definition.
+        self._local_combos = {(0, vk) for _hid, vk in local}
 
         self._macros, self._macro_map = build_macro_table(self.cfg)
         self._rec_combos = set()
@@ -2368,7 +2416,7 @@ class App(object):
                 self._rec_combos.add((0, vk))
         for m in self._macros:
             k = (m[0] & 0x000F, m[1])
-            if k in self._local_map or k in self._rec_combos or any(
+            if k in self._local_combos or k in self._rec_combos or any(
                     (mm & 0x000F, vv) == k for _h, mm, vv in always):
                 log("Macro trigger shares a key with an action or "
                     "recorder hotkey; while launched, the macro wins "

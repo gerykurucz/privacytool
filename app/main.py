@@ -20,11 +20,13 @@ Entry point. The code lives in focused modules:
     gui.py       default interface: sign-in + subscription gate + settings
     logo.py      embedded logo image
 
-There is no server half in this product. Sign-in is a direct OAuth
-round trip from the app (loopback redirect), and the subscription truth
-is an Ed25519-signed entitlements.json in a PUBLIC GitHub repo, rebuilt
-from Stripe events by an Action in the private controller repo under
-github/. See GITHUB-BACKEND.md.
+There is no server we operate in this product. Sign-in is a direct
+OAuth round trip from the app (loopback redirect), and the subscription
+truth is an Ed25519-signed entitlements.json hosted as a PUBLIC file in
+a GitHub repo - GitHub's own APIs are the "backend": a private-repo
+Action rebuilds the file from Stripe events, and the app fetches and
+verifies it directly. No middleman server exists or runs. See
+GITHUB-BACKEND.md.
 
 Run:
     python main.py               GUI (online sign-in first)

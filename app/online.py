@@ -1826,7 +1826,13 @@ class _OAuthReturn(BaseHTTPRequestHandler):
         state = (qs.get("state") or [""])[0]
         with _ATTEMPT_LOCK:
             att = _ATTEMPT
-        if att is None or not att.live or state != att.state:
+            # v8.67: live/state checked INSIDE the lock - teardown
+            # flips live=False under this same lock, so reading it
+            # after release was a race that could treat a dying
+            # attempt as current.
+            if att is None or not att.live or state != att.state:
+                att = None
+        if att is None:
             # a window from an attempt we are no longer running, or a
             # local port scanner: answer, disturb nothing
             self._send(_PAGE_STALE)
@@ -2064,12 +2070,20 @@ def login_with_provider(cfg, provider, timeout=LOGIN_TIMEOUT,
             alive = None
             for _ in range(2):
                 now = _browser_pids(launch.exe)
-                if now is not None and launch.before is not None:
-                    alive = bool(now - launch.before)
-                    if alive:
-                        break
-                elif now is not None:
-                    alive = bool(now)
+                if now is not None:
+                    if launch.before is not None:
+                        # PIDs that appeared AFTER we spawned are ours;
+                        # the user's pre-existing browser does not count.
+                        alive = bool(now - launch.before)
+                    else:
+                        # The pre-spawn snapshot failed, so we cannot
+                        # tell "our window handed off" from "the user's
+                        # browser was already running". v8.67: do NOT
+                        # trust a non-empty set (the old `bool(now)`
+                        # credited any running browser as our hand-off);
+                        # treat unknown parentage as no hand-off and let
+                        # the default-browser fallback take over.
+                        alive = False
                     if alive:
                         break
                 time.sleep(0.3)
