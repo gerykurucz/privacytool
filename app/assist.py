@@ -30,6 +30,7 @@ from recordings import (RecordingStore, MAX_STEPS as REC_MAX_STEPS,
 from vision import (FollowMemory, scan_region, accent_soft_of,
                     accent_matcher_of, accent_variants_of, _parse_accents,
                     _sig_matches_accents)
+from input_backend import make_input_backend
 
 if IS_WINDOWS:
     # v8.49: an EXPLICIT import list, not `from win32rt import *`.
@@ -140,6 +141,12 @@ class App(object):
         self.thread_id = None
 
         self._capture = CaptureBackend(cfg.get("capture_backend", "auto"))
+        # v8.50: click DELIVERY is a backend too. Default "win32" is the
+        # exact SendInput/SetCursorPos path used since v1 (bit-for-bit);
+        # "interception" delivers at the driver layer for games that
+        # ignore synthetic input, and degrades back to win32 on any
+        # problem so a half-installed setup can never eat a click.
+        self._input = make_input_backend(cfg)
         self.follow = FollowMemory()
 
         # physical left-button state, tracked from the hook (used by
@@ -556,24 +563,35 @@ class App(object):
 
     @staticmethod
     def _send_button(flag):
+        """Raw Win32 left-button transition (kept for reference paths
+        that must bypass the backend; assistance itself goes through
+        _button below)."""
         inp = INPUT()
         inp.type = INPUT_MOUSE
         inp.u.mi.dwFlags = flag
         user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
+    def _button(self, down):
+        """One left-button transition through the active input backend."""
+        self._input.button(down)
+
+    def _warp(self, x, y):
+        """Move the cursor through the active input backend."""
+        self._input.move(x, y)
+
     def send_click(self, x, y, double=False):
-        user32.SetCursorPos(int(x), int(y))
+        self._warp(x, y)
         time.sleep(0.012)
 
-        self._send_button(MOUSEEVENTF_LEFTDOWN)
+        self._button(True)
         time.sleep(0.015)
-        self._send_button(MOUSEEVENTF_LEFTUP)
+        self._button(False)
 
         if double:
             time.sleep(0.055)
-            self._send_button(MOUSEEVENTF_LEFTDOWN)
+            self._button(True)
             time.sleep(0.015)
-            self._send_button(MOUSEEVENTF_LEFTUP)
+            self._button(False)
 
     def _follow_may_learn(self, target):
         """
@@ -620,7 +638,7 @@ class App(object):
         ms = int(self.cfg.get("glide_ms", 0) or 0)
 
         if ms <= 0:
-            user32.SetCursorPos(int(nx), int(ny))
+            self._warp(nx, ny)
             return True
 
         x0, y0 = get_cursor_pos()
@@ -631,7 +649,7 @@ class App(object):
             ease = 1.0 - (1.0 - t) ** 3  # ease-out cubic
             px = int(round(x0 + (nx - x0) * ease))
             py = int(round(y0 + (ny - y0) * ease))
-            user32.SetCursorPos(px, py)
+            self._warp(px, py)
             time.sleep(0.010)
 
             ax, ay = get_cursor_pos()
@@ -852,9 +870,9 @@ class App(object):
                 # where the cursor is now; it is never swallowed.
                 log("Glide aborted by user movement; clicking at current position.")
                 time.sleep(0.012)
-                self._send_button(MOUSEEVENTF_LEFTDOWN)
+                self._button(True)
                 time.sleep(0.015)
-                self._send_button(MOUSEEVENTF_LEFTUP)
+                self._button(False)
 
             self.last_snap_time = time.perf_counter()
             self.last_snap_pos = (int(nx), int(ny))
@@ -1819,7 +1837,7 @@ class App(object):
         nx, ny = self._apply_motion_lead(cx, cy)
         px, py = get_cursor_pos()
         if math.hypot(nx - px, ny - py) > 2.0:
-            user32.SetCursorPos(int(nx), int(ny))
+            self._warp(nx, ny)
             self._follow_stable = 0
         else:
             self._follow_stable += 1
@@ -1911,8 +1929,7 @@ class App(object):
                         lock["misses"] = 0
                         if res.target.dist > float(
                                 self.cfg.get("on_target_dist", 10)):
-                            user32.SetCursorPos(int(x + res.target.dx),
-                                                int(y + res.target.dy))
+                            self._warp(x + res.target.dx, y + res.target.dy)
                             self._follow_stable = 0
                         else:
                             # Already on the item: nothing to do. After a

@@ -582,6 +582,27 @@ META = {
                                  "Desktop, VMs)", "mss"),
                                 ("Windows Graphics Capture - "
                                  "experimental", "wgc"))),
+    # v8.50: click DELIVERY backend - the opt-in Interception option.
+    # The dropdown shows availability in its own label; assist.py falls
+    # back to win32 with a log line if the driver is missing, so an
+    # unavailable choice can never eat a click.
+    "input_backend": ("Click delivery method",
+                      "How your assisted clicks reach the screen. "
+                      "Standard works everywhere with nothing to "
+                      "install and is what almost everyone should "
+                      "keep. Driver level sends clicks through the "
+                      "Interception kernel driver instead, for the "
+                      "few games that ignore normal synthetic clicks "
+                      "- it needs interception.dll next to Snappy AI "
+                      "and the driver installed (run interception.exe "
+                      "install as administrator, then reboot). If "
+                      "either is missing, Snappy AI says so once and "
+                      "keeps working the standard way. Applies on "
+                      "restart.",
+                      "map", (("Standard Windows method", "win32"),
+                              ("Driver level (Interception) - for "
+                               "games that ignore synthetic clicks",
+                               "interception"))),
     # v8.49: the three detection knobs have a documented precedence that
     # was invisible here. "Auto-adjust for dim screens" may only LOWER the
     # bar, and it stands aside entirely once you raise either number above
@@ -2983,6 +3004,40 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 return True
 
             R(_revals)
+
+            if key == "input_backend":
+                # v8.50: tell the truth about the driver option up
+                # front. Interception needs a DLL AND a kernel driver;
+                # when either is missing the choice still works (the
+                # engine falls back to the standard method with one
+                # log line), but the user must see that it is NOT
+                # active before picking it. The probe runs in a worker
+                # thread because creating an Interception context can
+                # block briefly while the driver loads.
+                note = tk.Label(cell, text="", font=F_DESC,
+                                bg=pal["card"], fg=pal["muted"],
+                                anchor="e", justify="right")
+                kit.reg(note, "card_muted")
+                note.grid(row=1, column=0, columnspan=2, sticky="e")
+
+                def _avail_probe(txt=note):
+                    try:
+                        from input_backend import InterceptionBackend
+                        ok = InterceptionBackend.available()
+                    except Exception:
+                        ok = False
+                    def _paint(ok=ok, txt=txt):
+                        if not _live(txt):
+                            return False
+                        txt.configure(text=(
+                            "Interception detected - ready to use."
+                            if ok else
+                            "Not installed here: picking this keeps "
+                            "the standard Windows method."))
+                        return True
+                    R(_paint)
+
+                threading.Thread(target=_avail_probe, daemon=True).start()
         elif kind == "colors":
             # v8.43: a colour-list row is SEEN, not read - the value
             # side is a strip of colour boxes (same look as the preset

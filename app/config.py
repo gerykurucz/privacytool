@@ -105,6 +105,20 @@ DEFAULT_CONFIG = {
     # "dxcam" / "mss" = force one library (mss always remains as fallback).
     "capture_backend": "auto",
 
+    # Click DELIVERY backend (v8.50). Opt-in secondary option:
+    # "win32" (default) injects through SendInput - no driver, works
+    # out of the box, and our own hooks recognise the events as
+    # injected so assistance never feeds itself.
+    # "interception" delivers clicks at the DRIVER level through the
+    # Interception library (github.com/oblitum/Interception) for the
+    # minority of games and Raw-Input apps that ignore synthetic
+    # events. It needs interception.dll beside the app AND the signed
+    # kernel driver installed (interception.exe install, then reboot).
+    # If either is missing the app says so once and keeps working
+    # through the standard Windows method - a half-installed setup can
+    # never eat a click. Applies on restart.
+    "input_backend": "win32",
+
     # Detected pieces whose bounding boxes are within this many pixels of
     # each other are merged into a single item. This rescues broken
     # outlines, icon + label pairs, and fragments that are individually
@@ -708,6 +722,7 @@ class Config:
         _CHOICES = {
             "accent_matcher": ("hsv", "oklab"),
             "capture_backend": ("auto", "dxcam", "mss", "wgc"),
+            "input_backend": ("win32", "interception"),
         }
         for key, allowed in _CHOICES.items():
             raw = self.values.get(key, DEFAULT_CONFIG[key])
