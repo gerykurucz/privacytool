@@ -371,12 +371,18 @@ if IS_WINDOWS:
         """
         Region screenshots as BGR uint8 arrays.
 
-        Fast path: dxcam (Windows Desktop Duplication), typically 1-3 ms
-        per region grab. Opt-in alternative: capture_backend = wgc uses
-        Windows.Graphics.Capture via the optional 'windows-capture'
-        package - push-based (frames only when the screen changes),
-        more reliable than Desktop Duplication on some laptops and HDR
-        setups. Any wgc failure degrades to the dxcam/mss chain.
+        Default (auto): mss - GDI screen grabs, ~5-15 ms per region.
+        Slower than Desktop Duplication but it sees what ordinary users
+        see, including games and hardware-accelerated apps; DXGI can
+        return stale/black frames there (v8.52: auto used to prefer
+        dxcam, which broke assistance inside live tests).
+        Opt-in alternatives via capture_backend:
+        - dxcam: Windows Desktop Duplication, typically 1-3 ms per
+          region grab, but blind to some swapchains; mss stays fallback;
+        - wgc: Windows.Graphics.Capture via the optional 'windows-capture'
+          package - push-based (frames only when the screen changes),
+          more reliable than Desktop Duplication on some laptops and HDR
+          setups. Any wgc failure degrades to the dxcam/mss chain.
         Two dxcam quirks are handled here:
         - dxcam only covers the primary display and returns None when the
           desktop has not redrawn since the last frame, so every grab
@@ -388,8 +394,12 @@ if IS_WINDOWS:
 
         def __init__(self, prefer="auto"):
             self.prefer = str(prefer or "auto").lower()
+            # v8.52: capture_backend = dxcam is now honoured as a real
+            # preference instead of being silently folded into "auto".
+            self._dx_forced = self.prefer == "dxcam"
             self._dx_cam = None
             self._dx_tried = False
+            self._dx_failures = 0
             self._dx_lock = threading.Lock()
             self._wgc_state = None
             self._wgc_tried = False
@@ -404,12 +414,116 @@ if IS_WINDOWS:
             self._mss_cache = {}     # thread ident -> (thread, sct)
             self._notes = set()
             self._note_lock = threading.Lock()
+            # v8.51 diagnostics: per-backend frame statistics so the
+            # console can answer "why does assist fail in THIS app?"
+            # without guessing. A grab that comes back all-black or
+            # frozen is the signature of a capture API that cannot see
+            # the target window (hardware-accelerated overlays, DRM,
+            # protected game renderers); knowing WHICH backend produced
+            # the bad frames tells us what to tell the user.
+            self.stats_lock = threading.Lock()
+            self.stats = {
+                "dxcam": {"frames": 0, "black": 0, "frozen": 0},
+                "mss": {"frames": 0, "black": 0, "frozen": 0},
+                "wgc": {"frames": 0, "black": 0, "frozen": 0},
+            }
+            self._last_sig = {}      # backend -> last frame checksum
+            self._bad_noted = False  # warn once, not every frame
 
         def _note(self, msg):
             with self._note_lock:
                 if msg not in self._notes:
                     self._notes.add(msg)
                     log(msg)
+
+        def _record(self, which, img):
+            """Classify one grabbed frame (cheaply) and update stats.
+
+            black  - every pixel dark: the capture API returned an
+                     empty surface (typical for DirectX/Vulkan/DRM
+                     windows under GDI-based capture);
+            frozen - identical bytes to this backend's previous frame
+                     even though other backends keep seeing changes;
+                     Desktop Duplication on static content legitimately
+                     falls through to mss, so a frozen dxcam frame only
+                     counts when it repeats exactly.
+            """
+            try:
+                if img is None or img.size == 0:
+                    sig = None
+                    blank = True
+                else:
+                    view = img[:: max(1, img.shape[0] // 8),
+                               :: max(1, img.shape[1] // 8)]
+                    if not view.any():
+                        with self.stats_lock:
+                            self.stats[which]["frames"] += 1
+                            self.stats[which]["black"] += 1
+                        self._check_bad(which)
+                        return
+                    sig = hash(view.tobytes())
+                    # A solid-colour frame (e.g. a black letterbox bar
+                    # inside an otherwise live capture) is NOT evidence
+                    # of a blind backend - only repeated identical
+                    # frames are. Blank content counts as frozen when
+                    # it repeats; changing content resets the count.
+                    blank = bool((view == view.flat[0]).all())
+                with self.stats_lock:
+                    st = self.stats[which]
+                    st["frames"] += 1
+                    prev = self._last_sig.get(which)
+                    if prev is not None and sig == prev and not blank:
+                        st["frozen"] += 1
+                    if sig is not None:
+                        self._last_sig[which] = sig
+            except Exception:
+                return  # diagnostics must never break a click path
+            self._check_bad(which)
+
+        def _check_bad(self, which):
+            with self.stats_lock:
+                st = self.stats[which]
+                total = st["frames"]
+                bad = st["black"] + st["frozen"]
+            if total >= 20 and bad * 4 >= total * 3 and not self._bad_noted:
+                self._bad_noted = True
+                self._note(
+                    "Capture: %s frames are mostly black or unchanging "
+                    "(%d/%d). The screen looks correct to YOUR eyes but "
+                    "this engine cannot see the target window - common "
+                    "with games, hardware-accelerated apps and DRM video. "
+                    "Try capture_backend = wgc (or mss) in Settings; run "
+                    "'capture report' in the console for details."
+                    % (which, bad, total))
+
+        def capture_report(self):
+            """One-line summary per backend, for the console."""
+            lines = []
+            active = ("wgc" if self.prefer == "wgc" and self._wgc_state
+                      else "dxcam" if (self._dx_forced or self.prefer == "wgc")
+                      and self._dx_cam is not None else "mss")
+            lines.append("Capture engine in use: preferred=%s, active=%s"
+                         % (self.prefer, active))
+            for name in ("dxcam", "wgc", "mss"):
+                tried = {"dxcam": self._dx_tried,
+                         "wgc": self._wgc_tried,
+                         "mss": True}.get(name)
+                with self.stats_lock:
+                    st = dict(self.stats[name])
+                if not tried and st["frames"] == 0:
+                    hint = (" (auto prefers mss; set capture_backend = dxcam "
+                            "to opt in)") if name == "dxcam" else ""
+                    lines.append("  %-5s : not used%s" % (name, hint))
+                else:
+                    bad = st["black"] + st["frozen"]
+                    verdict = ("OK" if st["frames"] and bad * 4 < st["frames"]
+                               else "BLACK/FROZEN - cannot see some windows"
+                               if st["frames"] else "no frames yet")
+                    lines.append(
+                        "  %-5s : %d frames, %d black, %d frozen -> %s"
+                        % (name, st["frames"], st["black"],
+                           st["frozen"], verdict))
+            return "\n".join(lines)
 
         def _dx(self):
             with self._dx_lock:
@@ -419,11 +533,16 @@ if IS_WINDOWS:
 
                 if self.prefer not in ("auto", "dxcam", "wgc"):
                     return None
+                # v8.52: 'auto' deliberately skips dxcam (see grab()). The
+                # user can still opt in explicitly with capture_backend =
+                # dxcam; wgc keeps its own dxcam fast path as before.
+                if self.prefer == "auto":
+                    return None
 
                 try:
                     import dxcam
                 except ImportError:
-                    if self.prefer == "dxcam":
+                    if self._dx_forced:
                         self._note("Capture: dxcam requested but not installed; using mss.")
                     return None
 
@@ -646,31 +765,56 @@ if IS_WINDOWS:
             if self.prefer == "wgc":
                 shot = self._wgc_grab(region)
                 if shot is not None:
+                    self._record("wgc", shot)
                     return shot
                 # fall through: wgc -> dxcam -> mss
 
-            cam = self._dx()
-            if cam is not None:
-                frame = None
-                try:
-                    with self._dx_lock:
-                        # Retry briefly: a static desktop delivers no new
-                        # frames, and grab() then returns None. Five tries
-                        # is the sweet spot - a live frame almost always
-                        # arrives within the first two, and each extra
-                        # millisecond here delays the click itself. Past
-                        # that the mss fallback below is faster than
-                        # waiting on a desktop that is not redrawing.
-                        for _ in range(5):
-                            frame = cam.grab(region=region)
-                            if frame is not None:
-                                break
-                            time.sleep(0.001)
-                except Exception:
+            # v8.52: the AUTO default is mss-first. Desktop Duplication
+            # (dxcam) returns the last composited desktop image; games and
+            # fullscreen hardware-accelerated apps present through their own
+            # swapchain and often never repaint that image, so dxcam hands
+            # back stale/black frames there while GDI (mss) keeps seeing the
+            # window content - exactly the standalone addon's behaviour,
+            # which was mss-only. dxcam stays available as an explicit opt-in
+            # (capture_backend = dxcam) for users who want its 1-3 ms grabs
+            # in ordinary apps; 'wgc' keeps using it as its fast path.
+            if self._dx_forced or self.prefer == "wgc":
+                cam = self._dx()
+                if cam is not None:
                     frame = None
+                    try:
+                        with self._dx_lock:
+                            # Retry briefly: a static desktop delivers no new
+                            # frames, and grab() then returns None. Five tries
+                            # is the sweet spot - a live frame almost always
+                            # arrives within the first two, and each extra
+                            # millisecond here delays the click itself. Past
+                            # that the mss fallback below is faster than
+                            # waiting on a desktop that is not redrawing.
+                            for _ in range(5):
+                                frame = cam.grab(region=region)
+                                if frame is not None:
+                                    break
+                                time.sleep(0.001)
+                    except Exception as exc:
+                        frame = None
+                        # A dead camera (output taken over by a game, driver
+                        # hiccup) must not stall every future grab: after
+                        # repeated failures give up on dxcam and let mss take
+                        # over permanently.
+                        self._dx_failures += 1
+                        if self._dx_failures >= 30:
+                            self._note("Capture: dxcam failing repeatedly (%r); "
+                                       "switching to mss." % (exc,))
+                            with self._dx_lock:
+                                self._dx_cam = None
+                    else:
+                        self._dx_failures = 0
 
-                if frame is not None:
-                    return np.ascontiguousarray(frame[:, :, :3], dtype=np.uint8)
+                    if frame is not None:
+                        img = np.ascontiguousarray(frame[:, :, :3], dtype=np.uint8)
+                        self._record("dxcam", img)
+                        return img
 
             try:
                 shot = self._mss().grab({
@@ -682,7 +826,9 @@ if IS_WINDOWS:
                 img = np.frombuffer(shot.bgra, dtype=np.uint8).reshape(
                     shot.height, shot.width, 4
                 )[:, :, :3]
-                return np.ascontiguousarray(img)
+                img = np.ascontiguousarray(img)
+                self._record("mss", img)
+                return img
             except Exception as exc:
                 self._note("Capture: mss error %r" % (exc,))
                 return None

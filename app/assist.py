@@ -428,6 +428,10 @@ class App(object):
                     origin[0], origin[1],
                     float(self.cfg.get("follow_seconds", 20))
                 )
+            # The centre-follow cycle passes feed_center=False because it
+            # consumes res.target.sig right below; every other caller
+            # (click workers included) gets the sighting armed here.
+            feed_center = track is not False
             try:
                 res = scan_region(img, cx, cy, self.cfg.values, cap,
                                   follow_ctx=follow_ctx,
@@ -447,27 +451,7 @@ class App(object):
                 # at the pointer); no abs_x attribute exists.
                 ax = origin[0] + res.target.dx
                 ay = origin[1] + res.target.dy
-                track = self._track
-                if track is not None:
-                    now = time.perf_counter()
-                    track.append((now, ax, ay))
-                    while track and now - track[0][0] > 0.6:
-                        track.popleft()
-                    try:
-                        area = float(getattr(res.target, "area", 0) or 0)
-                        if area > 0.0:
-                            self._tracker.update(
-                                now, (ax, ay, math.sqrt(area)))
-                    except Exception:
-                        pass
-                # "Keep the cursor on it": any scan that found an item
-                # inside the watched square arms/refreshes the centre
-                # follow - both the click workers and the follow worker
-                # itself call scan_near, so a moving plane keeps the
-                # lock alive without needing another click. The gate
-                # lives in run_follow_worker (switch, buttons, pick
-                # radius), so arming here stays cheap and safe.
-                if bool(self.cfg.get("center_follow", False)):
+                if feed_center and bool(self.cfg.get("center_follow", False)):
                     prev = self._center_follow
                     if (prev is not None
                             and math.hypot(ax - prev["x"],
@@ -481,6 +465,21 @@ class App(object):
                         "when": time.perf_counter(),
                         "misses": 0,
                     }
+                # Feed the motion-lead history from EVERY centre scan,
+                # including the follow cycle's own (track=False): a
+                # chase without clicks must still keep the Kalman/linear
+                # track fresh or "Lead moving items" goes stale mid-flight.
+                now = time.perf_counter()
+                self._track.append((now, ax, ay))
+                while self._track and now - self._track[0][0] > 0.6:
+                    self._track.popleft()
+                try:
+                    area = float(getattr(res.target, "area", 0) or 0)
+                    if area > 0.0:
+                        self._tracker.update(
+                            now, (ax, ay, math.sqrt(area)))
+                except Exception:
+                    pass
                 return res.target
             return None
 
@@ -572,8 +571,16 @@ class App(object):
         user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def _button(self, down):
-        """One left-button transition through the active input backend."""
-        self._input.button(down)
+        """One left-button transition through the active input backend.
+
+        The backend's button() reports whether the stroke really went
+        out (False = it degraded mid-call). A lost transition would
+        leave the logical button stuck (down never followed by up), so
+        on any refusal we hand THIS event to Win32 SendInput right away.
+        """
+        if not self._input.button(down):
+            self._send_button(MOUSEEVENTF_LEFTDOWN if down
+                              else MOUSEEVENTF_LEFTUP)
 
     def _warp(self, x, y):
         """Move the cursor through the active input backend."""
@@ -1776,9 +1783,10 @@ class App(object):
         now = time.perf_counter()
 
         if cf is None or (now - cf["when"]) > 1.0:
-            if cf is not None:
+            stale = cf is not None
+            if stale:
                 # the chase went blind for a whole second: let go, and
-                # require a fresh dwell before locking onto anything
+                # require a fresh sighting before locking onto anything
                 self._center_follow = None
             # nothing armed (or the sighting went stale): try to pick
             # from where the cursor currently sits inside the box
@@ -1789,11 +1797,28 @@ class App(object):
                 float(self.cfg.get("radius", 150)) * self.dpi_scale))) // 2
             x, y = get_cursor_pos()
             if abs(x - mx) > half or abs(y - my) > half:
+                # cursor left the watched square: any dwell progress is
+                # over a different neighbourhood now - start clean
+                self._pick_at = None
                 return False
+            if stale:
+                # a just-expired chase must not re-acquire the very same
+                # pixel it lost within one cycle; give the dwell gate
+                # below its required head start
+                self._pick_at = None
             before = self._center_follow
-            target = self.scan_near(x, y, None, None)
+            # track=False: this cycle arms/refreshes sightings itself;
+            # scan_near must not double-write _center_follow here.
+            target = self.scan_near(x, y, None, False)
             if target is not None:
-                ax, ay = x + target.dx, y + target.dy
+                # dx/dy are REGION-relative (see scan_near's centre
+                # branch: abs = origin + d). The capture is anchored on
+                # the screen middle, NOT the cursor - using x+dx here
+                # pointed the chase at wherever the pointer happened to
+                # sit inside the box, which is why the cursor never
+                # actually moved onto the item.
+                ax = mx + target.dx
+                ay = my + target.dy
                 # did the SCAN arm a sighting of its own (a click
                 # worker's snap refreshed it a moment ago)? then the
                 # chase starts instantly - no dwell required.
@@ -1818,8 +1843,36 @@ class App(object):
                     log("Centre follow: keeping the cursor on the "
                         "picked item.")
                 else:
-                    self._pick_at = (ax, ay)
-                    self._pick_at_time = now
+                    anchors = vision._parse_accents(
+                        self.cfg.get("accent_color", "off"))
+                    mem = self.follow
+                    has_anchor = bool(anchors) \
+                        or (mem.sig is not None and mem.when > 0.0)
+                    if not has_anchor and self._pick_at is None:
+                        # No colour intent anywhere (accent off, nothing
+                        # snapped yet to remember): the chase still has
+                        # a job. The scan already ranked items by
+                        # CONTRAST - that is the primary mechanism;
+                        # colour only ever refines it. Arm instantly on
+                        # the first sighting so even a single-frame
+                        # popup gets chased, and let the miss-expiry
+                        # below release the lock just as quickly if the
+                        # sighting was noise.
+                        self._center_follow = {
+                            "x": ax, "y": ay, "sig": target.sig,
+                            "when": now, "misses": 0,
+                        }
+                        log("Centre follow: keeping the cursor on the "
+                            "item (contrast tracking - no accent "
+                            "colour set).")
+                    else:
+                        # A colour anchor exists but this specific item
+                        # must prove itself: park on the candidate for
+                        # ~0.3 s (two matching sightings) before arming,
+                        # so the cursor never jumps onto something the
+                        # user merely passed over.
+                        self._pick_at = (ax, ay)
+                        self._pick_at_time = now
             else:
                 self._pick_at = None
             return True
@@ -1834,6 +1887,14 @@ class App(object):
             return True
 
         cx, cy = cf["x"], cf["y"]
+        # The sighting that produced this position is alive RIGHT NOW.
+        # Refresh its timestamp: the click worker writes cf["when"] at
+        # scan rate while clicks flow, but a pure chase (no clicks) was
+        # never refreshed here - after 1 s the expiry above declared the
+        # lock stale, dropped it, and re-armed via dwell every second
+        # (visible stutter on scroll planes). Fresh sightings keep the
+        # chase continuous; only genuinely blind seconds let go.
+        cf["when"] = time.perf_counter()
         nx, ny = self._apply_motion_lead(cx, cy)
         px, py = get_cursor_pos()
         if math.hypot(nx - px, ny - py) > 2.0:
@@ -1914,16 +1975,28 @@ class App(object):
 
                 accent = lock.get("accent")
                 if not accent:
-                    time.sleep(0.05)
-                    continue
+                    # The pick failed to sample a colour (the cursor sat
+                    # on an edge or the capture refused). A follow with
+                    # no colour still has a job: stay on the high-
+                    # contrast item nearest where the user grabbed -
+                    # colour is the preferred anchor, contrast the
+                    # fallback, never a reason to do nothing.
+                    accent = None
 
                 x, y = get_cursor_pos()
                 radius = self.radius_px()
                 img, cx, cy, _origin, _edges = self.grab_around(x, y, radius)
                 if img is not None:
                     cfgv = dict(self.cfg.values)
-                    cfgv["accent_color"] = accent
-                    cfgv["accent_only"] = True
+                    if accent:
+                        cfgv["accent_color"] = accent
+                        cfgv["accent_only"] = True
+                    else:
+                        # No colour to aim at: plain contrast ranking,
+                        # which is exactly how every other scan behaves
+                        # without an accent configured.
+                        cfgv["accent_color"] = "off"
+                        cfgv["accent_only"] = False
                     res = vision.scan_region(img, cx, cy, cfgv, radius)
                     if res.kind == "target" and res.target is not None:
                         lock["misses"] = 0
@@ -1963,11 +2036,13 @@ class App(object):
     # user asking for that specific click, so it is deliberately the most
     # conservative. Every gate below can only PREVENT a click:
     #
-    #   1. the setting must be on, and an accent colour must exist - a
-    #      colour is the only statement of intent available, so with
-    #      accent_color off the feature never arms (config._sanitize
-    #      keeps your switches exactly as you left them and only logs
-    #      the mismatch; _auto_can_arm below is what refuses to act);
+    #   1. the setting must be on. An accent colour is NOT required any
+    #      more: turning this switch on IS the user's request to click
+    #      items (mouse1-style intent). With a colour set it aims at that
+    #      colour (accent_only forced on for the scan); without one it
+    #      falls back to the contrast-first ranking every other feature
+    #      uses, held to the stricter auto_click_min_contrast gate so
+    #      only crisp, clearly drawn items qualify;
     #   2. the app must be LAUNCHED. Paused means the keyboard and mouse
     #      are entirely the user's - same rule as every other action;
     #   3. the foreground window must not be ours;
@@ -1986,16 +2061,21 @@ class App(object):
     # ------------------------------------------------------------------
 
     def _auto_can_arm(self):
-        """(ok, reason) - may the auto-click loop act at all right now?"""
+        """(ok, reason) - may the auto-click loop act at all right now?
+
+        An accent colour is NO LONGER required. The user's stated intent
+        ("pressed mouse1") is the gesture; with no colour set the scan
+        falls back to the same contrast-first ranking every other feature
+        uses, gated by the stricter auto_click_min_contrast so only a
+        crisp, clearly drawn item can qualify. When a colour IS set it
+        still wins (accent_only), exactly as before.
+        """
         if not bool(self.cfg.get("auto_click", False)):
             return False, "auto_click is off"
 
         if self._auto_done:
             return False, "the per-session cap is spent"
 
-        accents = vision._parse_accents(self.cfg.get("accent_color"))
-        if not accents:
-            return False, "no accent colour to aim at"
         return True, ""
 
     def _auto_reset_session(self):
@@ -2010,24 +2090,28 @@ class App(object):
             self._auto_done = False
             self._auto_armed = False
             try:
-                gap = float(self.cfg.get("auto_click_interval", 2.0))
+                gap = float(self.cfg.get("auto_click_interval", 0.1))
             except (TypeError, ValueError):
-                gap = 2.0
-            self._auto_next = time.perf_counter() + max(0.5, gap)
+                gap = 0.1
+            self._auto_next = time.perf_counter() + max(0.1, gap)
 
     def _auto_scan_config(self):
         """Config snapshot for the auto scan.
 
-        accent_only is forced ON: the user already chose which colour the
-        click is for, so nothing else may qualify. min_contrast is raised
-        to auto_click_min_contrast, the same gate a manual click has to
-        clear but tuned for acting without feedback - a guess that is only
-        half-sure must not press a button on its own. Every other setting
-        (accent colour, exclude list, tolerances, size gates) is the
-        user's own, untouched.
+        accent_only is forced on ONLY when the user actually set a colour
+        (then it is their explicit statement of intent and nothing else
+        may qualify). With no accent colour configured the scan degrades
+        to plain contrast-first ranking - the same engine every manual
+        path uses - held to the stricter gate below. min_contrast is
+        raised to auto_click_min_contrast, the same scale a manual click
+        has to clear but tuned for acting without feedback - a guess that
+        is only half-sure must not press a button on its own. Every other
+        setting (accent colour, exclude list, tolerances, size gates) is
+        the user's own, untouched.
         """
         cfgv = dict(self.cfg.values)
-        cfgv["accent_only"] = True
+        accents = _parse_accents(cfgv.get("accent_color"))
+        cfgv["accent_only"] = bool(accents)
         cfgv["min_contrast"] = max(
             float(cfgv.get("min_contrast", 48)),
             float(self.cfg.get("auto_click_min_contrast", 60)),
@@ -2156,7 +2240,19 @@ class App(object):
 
     def run_auto_click_worker(self):
         """The auto-click loop. Own thread, daemon, never blocks a click."""
-        idle = 0.2
+
+        def _gap():
+            try:
+                g = float(self.cfg.get("auto_click_interval", 0.1))
+            except (TypeError, ValueError):
+                g = 0.1
+            return max(0.1, g)
+
+        # Poll floor between scans. With the interval at its 100 ms
+        # default this keeps the loop responsive without spinning; it is
+        # deliberately below the old 200 ms sleep so a fast interval is
+        # actually honoured end to end.
+        idle = 0.05
 
         while not self.stop.is_set():
             try:
@@ -2198,8 +2294,7 @@ class App(object):
                                                    y - last[1]) < repeat:
                     # Same place as last time - it is either still up, or
                     # the scan has not caught up with the click. Wait.
-                    self._auto_next = time.perf_counter() + \
-                        float(self.cfg.get("auto_click_interval", 2.0))
+                    self._auto_next = time.perf_counter() + _gap()
                     time.sleep(idle)
                     continue
 
@@ -2207,13 +2302,20 @@ class App(object):
                     announced = self._auto_armed
                     self._auto_armed = True
                 if not announced:
-                    log("Auto-click is ON: scanning for %s every %ss."
-                        % (self.cfg.get("accent_color"),
-                           float(self.cfg.get("auto_click_interval", 2.0))))
+                    # Announce what the scan will actually hunt, using
+                    # the same parse as the gate itself. The raw config
+                    # value is NOT safe to print: "off" and other junk
+                    # are truthy strings that parse to no accents, and
+                    # printing them claimed a colour hunt that never
+                    # happens (the scan runs contrast-first).
+                    acc = _parse_accents(self.cfg.get("accent_color", "off"))
+                    what = ("colour %s" % self.cfg.get("accent_color")
+                            if acc else "high-contrast items")
+                    log("Auto-click is ON: scanning for %s every %.3gs."
+                        % (what, _gap()))
 
                 self._auto_fire(x, y)
-                self._auto_next = time.perf_counter() + \
-                    float(self.cfg.get("auto_click_interval", 2.0))
+                self._auto_next = time.perf_counter() + _gap()
             except Exception as exc:
                 log("auto-click worker error: %r" % (exc,))
                 time.sleep(idle)

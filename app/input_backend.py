@@ -70,6 +70,7 @@ class Win32Backend(object):
                             else win32rt.MOUSEEVENTF_LEFTUP)
         win32rt.user32.SendInput(1, ctypes.byref(inp),
                                  ctypes.sizeof(win32rt.INPUT))
+        return True   # this backend never degrades - it IS the fallback
 
     def ok_for_button(self):
         return True
@@ -132,24 +133,236 @@ class InterceptionBackend(object):
         dirs = []
         try:
             if getattr(sys, "frozen", False):
+                # v8.50 fix: the exe's OWN folder first. Windows' LoadLibrary
+                # does not reliably search it (CWD / System32 / PATH only), so
+                # an interception.dll sitting next to Snappy AI.exe was being
+                # reported as "missing" while the driver was installed fine.
                 dirs.append(os.path.dirname(sys.executable))
+                # PyInstaller onefile unpacks modules into _MEIPASS; a DLL
+                # bundled there is equally valid.
+                meipass = getattr(sys, "_MEIPASS", None)
+                if meipass:
+                    dirs.append(meipass)
             dirs.append(os.path.dirname(os.path.abspath(__file__)))
         except Exception:
             pass
         dirs.append("")            # then the normal PATH search
         return dirs
 
+    # Legacy ABI-1 exports every genuine interception.dll must carry
+    # (v1.0.1 official release included). ABI-10 helpers such as
+    # first_target_device/receive/iterate are NOT required and are
+    # absent from official release DLLs.
+    _REQUIRED_EXPORTS = ("interception_create_context",
+                         "interception_destroy_context",
+                         "interception_wait_with_timeout",
+                         "interception_send")
+
+    @staticmethod
+    def _has_exports(dll):
+        # getattr on a ctypes WinDLL raises AttributeError for missing
+        # exports, so hasattr answers per name without touching the
+        # driver. Plain-name hits win; otherwise fall back to reading
+        # the PE export table once (decorated MSVC builds).
+        plain = getattr(dll, "_plain_exports", None)
+        if plain is not None:
+            return all(n in plain for n in
+                       InterceptionBackend._REQUIRED_EXPORTS)
+        if all(hasattr(dll, n) for n in
+               InterceptionBackend._REQUIRED_EXPORTS):
+            return True
+        return InterceptionBackend._abi1_names(dll)
+
+    @staticmethod
+    def _abi1_names(dll):
+        # v8.52: the official v1.0.1 interception.dll is built with MSVC
+        # __declspec(dllexport) WITHOUT extern "C", so its exports are
+        # DECORATED C++ names (?interception_send@@YA... or plain
+        # interception_send@4 depending on build). ctypes' GetProcAddress
+        # only ever asks for the undecorated name and finds NOTHING on a
+        # perfectly good official DLL - that was the real reason users
+        # holding the correct library/interception.dll still saw "does
+        # not export the Interception functions". Read the PE export
+        # table directly, map every interception_* name (decorated or
+        # not) to its absolute function address, and remember them;
+        # _install_plain_lookup then binds the plain names ctypes wants.
+        try:
+            base = getattr(dll, "_handle", None)
+            if not base:
+                return False
+            k32 = ctypes.windll.kernel32
+            k32.ImageDirectoryEntryToData.restype = ctypes.c_void_p
+            k32.ImageDirectoryEntryToData.argtypes = [
+                ctypes.c_void_p, ctypes.c_bool, ctypes.c_uint16,
+                ctypes.POINTER(ctypes.c_uint)]
+            flags = ctypes.c_uint()
+            # IMAGE_DIRECTORY_ENTRY_EXPORT == 0; True = loaded image.
+            data = k32.ImageDirectoryEntryToData(base, True, 0,
+                                                 ctypes.byref(flags))
+            if not data:
+                return False
+
+            class IMAGE_EXPORT_DIRECTORY(ctypes.Structure):
+                _fields_ = [
+                    ("Characteristics", ctypes.c_uint32),
+                    ("TimeDateStamp", ctypes.c_uint32),
+                    ("MajorVersion", ctypes.c_uint16),
+                    ("MinorVersion", ctypes.c_uint16),
+                    ("Name", ctypes.c_uint32),
+                    ("OrdinalBase", ctypes.c_uint32),
+                    ("NumberOfFunctions", ctypes.c_uint32),
+                    ("NumberOfNames", ctypes.c_uint32),
+                    ("AddressOfFunctions", ctypes.c_uint32),
+                    ("AddressOfNames", ctypes.c_uint32),
+                    ("AddressOfNameOrdinals", ctypes.c_uint32),
+                ]
+
+            ed = IMAGE_EXPORT_DIRECTORY.from_address(data)
+            names_addr = data + ed.AddressOfNames
+            ord_addr = data + ed.AddressOfNameOrdinals
+            func_addr = data + ed.AddressOfFunctions
+            # Absolute span of this image's own function-pointer table;
+            # a forwarded export's RVA addresses a name string instead,
+            # which falls OUTSIDE this span. Also used by
+            # _install_plain_lookup to reject pointers that do not live
+            # inside this DLL before they are ever called.
+            func_lo = ed.AddressOfFunctions
+            func_hi = func_lo + 4 * ed.NumberOfFunctions
+            found = {}
+            for i in range(ed.NumberOfNames):
+                na = ctypes.cast(names_addr + 4 * i,
+                                 ctypes.POINTER(ctypes.c_uint32)).contents.value
+                raw = ctypes.string_at(data + na, 192).split(b"\x00")[0]
+                short = InterceptionBackend._demangle(raw)
+                if short is None:
+                    continue
+                idx = ctypes.cast(ord_addr + 2 * i,
+                                  ctypes.POINTER(ctypes.c_uint16)).contents.value
+                rva = ctypes.cast(func_addr + 4 * idx,
+                                  ctypes.POINTER(ctypes.c_uint32)).contents.value
+                if rva == 0:
+                    continue
+                # Forwarded export? Then its RVA addresses a name
+                # string instead of code - bind through the target DLL.
+                is_forward = not (func_lo <= rva < func_hi)
+                if is_forward:
+                    fwd = ctypes.string_at(base + rva, 128)
+                    dll_name, _, fwd_name = fwd.partition(b".")
+                    try:
+                        other = ctypes.WinDLL(dll_name.decode("ascii"))
+                        p = other.GetProcAddress(fwd_name.split(b"@")[0])
+                        if p:
+                            found[short] = int(p)
+                    except Exception:
+                        pass
+                    continue
+                found.setdefault(short, base + rva)
+            if not all(n in found for n in
+                       InterceptionBackend._REQUIRED_EXPORTS):
+                return False
+            dll._plain_exports = found       # plain name -> abs address
+            dll._plain_image_base = base     # module load address
+            # Absolute span of this image's own export-address range (the
+            # RVA table is relative to `base`). Used by
+            # _install_plain_lookup to reject any pointer that does not
+            # actually live inside this DLL before it is ever called.
+            dll._plain_code_lo = base + func_lo
+            dll._plain_code_hi = base + func_hi
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _demangle(raw):
+        # b"interception_send" -> itself; b"?interception_send@@YA..." or
+        # b"interception_send@4" -> b"interception_send". Returns the
+        # plain name only when it starts with interception_.
+        try:
+            s = raw.decode("ascii", "ignore")
+        except Exception:
+            return None
+        if s.startswith("?"):
+            s = s[1:]
+            s = s.split("@@")[0]
+        elif "@" in s:
+            head, tail = s.split("@", 1)
+            if tail.isdigit():
+                s = head
+        if s.startswith("interception_"):
+            return s
+        return None
+
+    @staticmethod
+    def _install_plain_lookup(dll):
+        # v8.52: bind plain names that ctypes' own GetProcAddress could
+        # not find because the build exports them MSVC-decorated only.
+        # The scan (_abi1_names) knows the exact function addresses; we
+        # re-resolve through THIS module handle's GetProcAddress and cast
+        # to a real ctypes function pointer, then setattr it on the DLL
+        # object. ctypes WinDLL returns instance attributes before the
+        # dynamic lookup, so everything downstream (.argtypes/.restype
+        # assignment, byref(), Structure pointers) behaves exactly like a
+        # normally-loaded DLL. Undecorated (ABI-10) builds skip per name.
+        plain = getattr(dll, "_plain_exports", None)
+        if not plain:
+            return
+        try:
+            base = getattr(dll, "_plain_image_base", 0) or 0
+            clo = getattr(dll, "_plain_code_lo", 0) or 0
+            chi = getattr(dll, "_plain_code_hi", 0) or 0
+            k32 = ctypes.windll.kernel32
+            k32.GetProcAddress.restype = ctypes.c_void_p
+            k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            for short, va in plain.items():
+                if hasattr(dll, short):
+                    continue      # plain GetProcAddress already works
+                # Preferred path: resolve through THIS module handle so
+                # ctypes fully owns the pointer (and validates it). Only
+                # if that fails do we fall back to the scanned VA, and we
+                # accept it only when it lies inside this image's bounds.
+                addr = k32.GetProcAddress(base, short.encode("ascii"))
+                if not addr:
+                    if not (clo <= va < chi):
+                        continue          # unvalidated - refuse to bind
+                    addr = va
+                if not addr:
+                    continue
+                f = ctypes.cast(addr, ctypes.CFUNCTYPE(ctypes.c_void_p))
+                setattr(dll, short, f)
+        except Exception:
+            pass
+
     @classmethod
     def _load_dll(cls):
+        loaded_path = None
         for d in cls._candidate_dirs():
             p = os.path.join(d, "interception.dll") if d else \
                 "interception.dll"
             try:
                 if d and not os.path.isfile(p):
                     continue
-                return ctypes.WinDLL(p)
+                dll = ctypes.WinDLL(p)
+                loaded_path = p if d else "(PATH search)"
             except OSError:
                 continue
+            # A DLL that lacks the real Interception exports is NOT the
+            # Interception library - keep searching (a stale copy can sit
+            # on PATH/System32 ahead of the good one next to the exe).
+            # v8.51 fix: probe LEGACY ABI-1 names only. The official
+            # interception.dll from release v1.0.1 exports nothing else;
+            # probing first_target_device (an ABI-10 helper) rejected
+            # perfectly good official DLLs and every user saw "selected
+            # but not working" even with the driver installed.
+            # v8.52 fix: the official DLL's exports are MSVC-DECORATED
+            # (?interception_send@@YA...), which plain GetProcAddress
+            # cannot find at all - _abi1_names() reads the export table
+            # directly and installs plain-name aliases. Only after that
+            # probe do we judge whether this is the real library.
+            if cls._has_exports(dll) or cls._abi1_names(dll):
+                cls._install_plain_lookup(dll)
+                cls._loaded_path = p if d else "(PATH search)"
+                return dll
+        cls._loaded_path = loaded_path
         return None
 
     @classmethod
@@ -170,18 +383,22 @@ class InterceptionBackend(object):
                 dll.interception_create_context.restype = ctypes.c_void_p
                 ctx = dll.interception_create_context()
                 if ctx:
-                    # wait() would block up to timeout ms; iterate() is
-                    # non-blocking and returns 0 while nothing moved.
-                    dll.interception_iterate.argtypes = [ctypes.c_void_p,
-                                                         ctypes.c_double]
                     dll.interception_destroy_context.argtypes = \
                         [ctypes.c_void_p]
-                    deadline = time.time() + 0.25
-                    while time.time() < deadline:
-                        if dll.interception_iterate(ctx, 0.0):
-                            ok = True
-                            break
-                        time.sleep(0.01)
+                    # Probe driver liveness WITHOUT requiring any device
+                    # input: a short blocking wait wakes idle devices too.
+                    # (iterate() is an ABI-10 helper absent from official
+                    # release DLLs, so it can't be used here.)
+                    dll.interception_wait_with_timeout.restype = ctypes.c_int
+                    dll.interception_wait_with_timeout.argtypes = \
+                        [ctypes.c_void_p, ctypes.c_double]
+                    try:
+                        # Any return >= 0 means the driver answered; the
+                        # call only fails outright if no driver is there.
+                        dll.interception_wait_with_timeout(ctx, 0.15)
+                        ok = True
+                    except Exception:
+                        ok = False
                     dll.interception_destroy_context(ctx)
         except Exception:
             ok = False
@@ -208,20 +425,64 @@ class InterceptionBackend(object):
 
         self._STROKE = STROKE
         dll = self._dll
-        dll.interception_first_target_device.restype = c.c_int
-        dll.interception_first_target_device.argtypes = [c.c_void_p,
-                                                         c.c_int]
+        # v8.50: declare EVERY entry point used below, with restypes as
+        # well as argtypes. Without a restype, ctypes assumes int and
+        # truncates the 64-bit context handle on the first call - the
+        # driver then receives garbage and Interception dies at startup.
+        dll.interception_create_context.restype = c.c_void_p
+        dll.interception_destroy_context.argtypes = [c.c_void_p]
+        # first_target_device exists only on ABI-10 builds (NOT the
+        # official v1.0.1 release DLL). Declare it when present so
+        # _find_mouse can try it as a fast path; absence is fine.
+        if hasattr(dll, "interception_first_target_device"):
+            dll.interception_first_target_device.restype = c.c_int
+            dll.interception_first_target_device.argtypes = [c.c_void_p,
+                                                             c.c_int]
+        # v8.52: legacy ABI-1 fallbacks. The official v1.0.1 DLL has no
+        # next_handle at all - device iteration there is just walking
+        # the fixed handles 1..10 and asking is_keyboard/is_mouse. Only
+        # declare what this build actually exports.
+        if hasattr(dll, "interception_first_device"):
+            dll.interception_first_device.restype = c.c_int
+            dll.interception_first_device.argtypes = [c.c_int]
+        if hasattr(dll, "interception_next_handle"):
+            dll.interception_next_handle.restype = c.c_int
+            dll.interception_next_handle.argtypes = [c.c_void_p, c.c_int]
+        if hasattr(dll, "interception_is_mouse"):
+            dll.interception_is_mouse.restype = c.c_int
+            dll.interception_is_mouse.argtypes = [c.c_int]
+        dll.interception_wait_with_timeout.restype = c.c_int
+        dll.interception_wait_with_timeout.argtypes = [c.c_void_p,
+                                                       c.c_double]
         dll.interception_wait.argtypes = [c.c_void_p, c.c_int,
                                           ctypes.POINTER(STROKE)]
         dll.interception_send.restype = c.c_int
         dll.interception_send.argtypes = [c.c_void_p, c.c_int,
                                           ctypes.POINTER(STROKE), c.c_int]
-        dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
-                                                c.c_ushort]
-        dll.interception_destroy_context.argtypes = [c.c_void_p]
+        if hasattr(dll, "interception_set_filter"):
+            dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
+                                                    c.c_ushort]
 
     def _find_mouse(self):
+        # v8.50: first_target_device only reports devices that have ALREADY
+        # sent input since the context was created - a freshly booted or
+        # idle mouse makes it return 0 and the backend wrongly degraded to
+        # Win32 ("driver not installed" even though it was). Interception's
+        # own idiom is wait() with a short timeout, which also wakes idle
+        # devices; fall back to iterating the static device range 1..10.
+        try:
+            self._dll.interception_wait_with_timeout.argtypes = \
+                [ctypes.c_void_p, ctypes.c_double]
+            self._dll.interception_wait_with_timeout(self._context, 0.2)
+        except Exception:
+            pass
         for kind in (15, 14):     # MOUSE then MOUSE_ABSOLUTE
+            # first_target_device is an ABI-10 helper; the official
+            # v1.0.1 release DLL does not export it. Skip the fast path
+            # when absent - the static-range walk below is the legacy
+            # idiom and always works.
+            if not hasattr(self._dll, "interception_first_target_device"):
+                break
             dev = self._dll.interception_first_target_device(
                 self._context, kind)
             if dev > 0:
@@ -231,6 +492,48 @@ class InterceptionBackend(object):
                 except Exception:
                     pass
                 return dev
+        if hasattr(self._dll, "interception_next_handle") and \
+                hasattr(self._dll, "interception_first_device") and \
+                hasattr(self._dll, "interception_is_mouse"):
+            # ABI-10 iteration idiom. Wrapped defensively: on any build
+            # where these helpers misbehave we still land on the legacy
+            # fixed-range walk below instead of degrading to Win32.
+            try:
+                for kind in (15, 14):
+                    dev = self._dll.interception_next_handle(
+                        self._context,
+                        self._dll.interception_first_device(kind))
+                    while 0 < dev <= self._INTERCEPTION_MAX_DEVICES:
+                        if self._dll.interception_is_mouse(dev):
+                            try:
+                                self._dll.interception_set_filter(
+                                    self._context, dev, self._FILTER_ALL)
+                            except Exception:
+                                pass
+                            return dev
+                        dev = self._dll.interception_next_handle(
+                            self._context, dev)
+            except Exception:
+                pass
+        if hasattr(self._dll, "interception_is_mouse") and \
+                not hasattr(self._dll, "interception_next_handle"):
+            # v8.52: official v1.0.1 ABI-1 has no next_handle/first_device.
+            # Its documented idiom is simply walking the fixed handles
+            # 1..10 and asking is_keyboard()/is_mouse() per handle.
+            is_mouse = self._dll.interception_is_mouse
+            is_mouse.argtypes = [ctypes.c_int]
+            is_mouse.restype = ctypes.c_int
+            for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+                try:
+                    if is_mouse(dev):
+                        try:
+                            self._dll.interception_set_filter(
+                                self._context, dev, self._FILTER_ALL)
+                        except Exception:
+                            pass
+                        return dev
+                except Exception:
+                    continue
         log("Input: Interception found no mouse target device - is the "
             "driver installed (interception.exe install + reboot)? "
             "Using Windows injection.")
@@ -246,20 +549,36 @@ class InterceptionBackend(object):
             log("Input: Interception %s failed; falling back to Windows "
                 "injection for the rest of this session." % (where,))
 
+    # Longest distance we will travel as relative strokes. Beyond this
+    # a warp is faster and cannot undershoot; games that track raw motion
+    # still see the button stroke's motion bits land on the real cursor.
+    _STEP = 128
+    _MAX_STROKE_TRAVEL = 400
+
     def move(self, x, y):
-        """Warp to absolute (x, y) as small relative strokes with a
-        settle-and-correct loop. Driver-level motion travels through
-        the same pipeline as a physical mouse, so pointer speed and DPI
-        apply exactly as they would for a hand - the correction loop
-        converges regardless."""
+        """Move the cursor to absolute (x, y).
+
+        Short hops go as relative strokes with a settle-and-correct
+        loop (driver-level motion passes through pointer speed and DPI
+        exactly like a hand). Distances beyond _MAX_STROKE_TRAVEL use a
+        SetCursorPos warp instead: four 128 px strokes can only cover
+        ~512 px and the loop silently stops short of farther targets,
+        leaving the next click at the wrong place. The warp is honest
+        because the caller treats every move as a teleport anyway.
+        """
         import win32rt
+        tx, ty = int(x), int(y)
         try:
             cx, cy = win32rt.get_cursor_pos()
         except Exception:
             self.note_failure("cursor read")
+            win32rt.user32.SetCursorPos(tx, ty)   # best effort
             return
-        tx, ty = int(x), int(y)
         if (cx, cy) == (tx, ty):
+            return
+        if abs(tx - cx) > self._MAX_STROKE_TRAVEL or \
+           abs(ty - cy) > self._MAX_STROKE_TRAVEL:
+            win32rt.user32.SetCursorPos(tx, ty)
             return
         for _ in range(4):
             dx = max(-self._STEP, min(self._STEP, tx - cx))
@@ -268,6 +587,9 @@ class InterceptionBackend(object):
             s.mouse.type = self._IS_MOUSE_MOVE
             s.mouse.x, s.mouse.y = dx, dy
             self._send(s, "move")
+            if self._degraded:
+                win32rt.user32.SetCursorPos(tx, ty)  # finish the trip
+                return
             time.sleep(0.001)
             try:
                 cx, cy = win32rt.get_cursor_pos()
@@ -276,28 +598,44 @@ class InterceptionBackend(object):
                 return
             if (cx, cy) == (tx, ty):
                 break
-
-    _STEP = 128
+        else:
+            # Corrector never converged (acceleration fighting the
+            # strokes): do not leave the click short - warp home.
+            try:
+                if win32rt.get_cursor_pos() != (tx, ty):
+                    win32rt.user32.SetCursorPos(tx, ty)
+            except Exception:
+                pass
 
     def button(self, down):
+        # interception.h: a stroke that changes button state must ALSO
+        # carry the motion bits, or the driver drops it silently -
+        # without IS_MOUSE_MOVE every click through this backend vanishes.
         s = self._STROKE()
-        s.mouse.type = self._IS_MOUSE_LEFT
+        s.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
+        s.mouse.x, s.mouse.y = 0, 0
         s.mouse.buttons = 1 if down else 0
         self._send(s, "button")
+        return self.ok_for_button()
 
     # -- internals ------------------------------------------------------
     def _send(self, stroke, what):
+        """Deliver one stroke. Returns True on success. NEVER swallows a
+        failure silently: any refused/errored send degrades the backend
+        AND returns False, so callers can hand the event to Win32."""
         with self._lock:
             if self._degraded:
-                return
+                return False
             try:
                 n = self._dll.interception_send(self._context, self._dev,
                                                 ctypes.byref(stroke), 1)
             except Exception:
                 self.note_failure(what)
-                return
+                return False
             if not n:
                 self.note_failure(what)
+                return False
+            return True
 
 
 def make_input_backend(cfg):
@@ -309,6 +647,12 @@ def make_input_backend(cfg):
     """
     choice = str(cfg.get("input_backend", "win32") or "win32").lower()
     if choice == "interception":
+        # For the failure message: did a *valid* Interception DLL load at
+        # all? Probing here is cheap and only runs when the user opted in.
+        try:
+            cls_dll_ok = InterceptionBackend._load_dll() is not None
+        except Exception:
+            cls_dll_ok = False
         try:
             be = InterceptionBackend()
             if be.ok_for_button():
@@ -320,7 +664,19 @@ def make_input_backend(cfg):
         except Exception as exc:
             log("Input: Interception unavailable (%r); using the "
                 "standard Windows method." % (exc,))
-        log("Input: Interception selected but not working (missing "
-            "interception.dll or driver not installed). Using the "
-            "standard Windows method.")
+        where = getattr(InterceptionBackend, "_loaded_path", None)
+        if where is None:
+            why = ("interception.dll was not found next to the program "
+                   "or on PATH")
+        elif not cls_dll_ok:
+            why = ("interception.dll was loaded from %s but it does not "
+                   "export the Interception functions - replace it with "
+                   "the interception.dll from the official v1.0.1 "
+                   "release archive (library/ directory)" % where)
+        else:
+            why = ("interception.dll is fine but the kernel driver did "
+                   "not answer - run 'interception.exe install' from an "
+                   "admin prompt and reboot")
+        log("Input: Interception selected but not working (%s). Using "
+            "the standard Windows method." % why)
     return Win32Backend()
