@@ -648,30 +648,23 @@ class InterceptionBackend(object):
                                                     c.c_ushort]
 
     def _find_mouse(self):
-        # v8.59: NO blocking wait here any more. The old opening act -
-        # wait_with_timeout(ctx, 0.2) as a "wake-up" before the walk -
-        # was itself the hang: ABI-1's FIRST wait call attaches the
-        # filter to every installed device and waits for them to answer,
-        # an idle mouse answers nothing, so the call blocked for its
-        # full timeout inside the 8 s discovery budget (PyInstaller's
-        # 5 ms GIL switch interval meant the parked worker never got
-        # rescheduled in time) -> false "device discovery did not return
-        # within 8 s (driver installed but wedged)" on healthy installs.
-        # Device wake-up now happens ONLY as a bounded fallback in
-        # __init__ after this function has already reported the table
-        # empty. This function must stay pure-table: is_mouse(1..10)
-        # reads the driver's installed-device list without traffic.
-        # v8.55: THE official ABI-1 discovery idiom is the static-range
-        # walk below (is_keyboard()/is_mouse() over handles 1..10) - it
-        # needs no device traffic at all, so it finds an idle mouse on a
-        # cold boot. Run it FIRST. The previous order relied on
-        # wait_with_timeout "waking" devices, but interception_wait()
-        # never enumerates anything by itself: on an untouched machine
-        # the walk ran only after the ABI-10 fast path (absent from the
-        # release DLL), while the wait-based probe timed out -> false
-        # "kernel driver did not answer" even with the driver installed.
-        if hasattr(self._dll, "interception_is_mouse") and \
-                not hasattr(self._dll, "interception_next_handle"):
+        # v8.60: EVERY branch of discovery is tried on EVERY build.
+        # v8.59 gated the static-range walk behind
+        # "has is_mouse AND NOT has next_handle", which assumed ABI-1
+        # and ABI-10 builds are mutually exclusive - they are not. A
+        # DLL that exports BOTH helper sets skipped the walk entirely,
+        # fell into the ABI-10 iteration path, and when that returned
+        # nothing died with "found no mouse target device" even though
+        # the plain 1..10 walk would have answered instantly. The
+        # ordering insight from v8.59 stands: NEVER open with a
+        # blocking wait (ABI-1's first wait attaches the filter to
+        # every device and blocks until real traffic arrives); wake-up
+        # happens only as a bounded fallback in __init__.
+        if hasattr(self._dll, "interception_is_mouse"):
+            # Official ABI-1 idiom: walk the fixed handles 1..10 and ask
+            # is_mouse(). Reads the driver's installed-device TABLE;
+            # needs no device traffic, so an idle mouse on a cold boot
+            # still counts. Try FIRST on every build that exports it.
             is_mouse = self._dll.interception_is_mouse
             is_mouse.argtypes = [ctypes.c_int]
             is_mouse.restype = ctypes.c_int
@@ -733,28 +726,19 @@ class InterceptionBackend(object):
                             self._context, dev)
             except Exception:
                 pass
-        if hasattr(self._dll, "interception_is_mouse") and \
-                not hasattr(self._dll, "interception_next_handle"):
-            # v8.52: official v1.0.1 ABI-1 has no next_handle/first_device.
-            # Its documented idiom is simply walking the fixed handles
-            # 1..10 and asking is_keyboard()/is_mouse() per handle.
-            is_mouse = self._dll.interception_is_mouse
-            is_mouse.argtypes = [ctypes.c_int]
-            is_mouse.restype = ctypes.c_int
-            for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
-                try:
-                    if is_mouse(dev):
-                        try:
-                            self._dll.interception_set_filter(
-                                self._context, dev, self._FILTER_ALL)
-                        except Exception:
-                            pass
-                        return dev
-                except Exception:
-                    continue
-        log("Input: Interception found no mouse target device - is the "
-            "driver installed (interception.exe install + reboot)? "
-            "Using Windows injection.")
+        # v8.60: the static-range walk at the TOP of this function already
+        # covered every build that exports is_mouse(); there is nothing
+        # left to re-walk here. Reaching this point means BOTH the table
+        # walk and the ABI-10 iteration came up empty on a DLL whose
+        # create_context just succeeded - so the driver IS answering but
+        # genuinely reports no mouse through this context. The old tail
+        # duplicate of the walk (gated on "no next_handle") could never
+        # fire after the top walk ran: same inputs, same result.
+        log("Input: Interception found no mouse target device - the "
+            "driver answered but its device table lists no mouse. "
+            "Reinstall it ('interception.exe install' from an admin "
+            "prompt), reboot, and make sure the mouse is plugged in "
+            "before Snappy AI starts. Using Windows injection.")
         return None
 
     # -- contract ------------------------------------------------------
