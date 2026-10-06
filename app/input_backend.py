@@ -155,10 +155,7 @@ class InterceptionBackend(object):
     # absent from official release DLLs.
     _REQUIRED_EXPORTS = ("interception_create_context",
                          "interception_destroy_context",
-                         "interception_first_device",
-                         "interception_next_handle",
-                         "interception_is_keyboard",
-                         "interception_is_mouse",
+                         "interception_wait_with_timeout",
                          "interception_send")
 
     @staticmethod
@@ -168,6 +165,125 @@ class InterceptionBackend(object):
         # driver. Works on any ABI level.
         return all(hasattr(dll, n) for n in
                    InterceptionBackend._REQUIRED_EXPORTS)
+
+    @staticmethod
+    def _abi1_names(dll):
+        # v8.52: the official v1.0.1 interception.dll is built with MSVC
+        # __declspec(dllexport), which DECORATES its exports:
+        #   ?interception_create_context@@YAPAXXZ and friends.
+        # ctypes' GetProcAddress only ever asks for the plain C name, so
+        # hasattr() says "not found" for EVERY function of a perfectly
+        # good official DLL - that was the real reason users with the
+        # correct library/interception.dll next to the exe still saw
+        # "does not export the Interception functions". Scan the actual
+        # export table once and build decorated-name aliases so plain
+        # getattr lookups succeed. (ABI-10 rebuilds export undecorated
+        # names; those keep working untouched.)
+        try:
+            import re
+            base = getattr(dll, "_handle", None)
+            if not base:
+                return False
+            k32 = ctypes.windll.kernel32
+            k32.ImageDirectoryEntryToData.restype = ctypes.c_void_p
+            k32.ImageDirectoryEntryToData.argtypes = [
+                ctypes.c_void_p, ctypes.c_bool, ctypes.c_uint16,
+                ctypes.POINTER(ctypes.c_uint)]
+            flags = ctypes.c_uint()
+            # IMAGE_DIRECTORY_ENTRY_EXPORT == 0; True = loaded image.
+            data = k32.ImageDirectoryEntryToData(base, True, 0,
+                                                 ctypes.byref(flags))
+            if not data:
+                return False
+
+            class IMAGE_EXPORT_DIRECTORY(ctypes.Structure):
+                _fields_ = [
+                    ("Characteristics", ctypes.c_uint32),
+                    ("TimeDateStamp", ctypes.c_uint32),
+                    ("MajorVersion", ctypes.c_uint16),
+                    ("MinorVersion", ctypes.c_uint16),
+                    ("Name", ctypes.c_uint32),
+                    ("OrdinalBase", ctypes.c_uint32),
+                    ("NumberOfFunctions", ctypes.c_uint32),
+                    ("NumberOfNames", ctypes.c_uint32),
+                    ("AddressOfFunctions", ctypes.c_uint32),
+                    ("AddressOfNames", ctypes.c_uint32),
+                    ("AddressOfNameOrdinals", ctypes.c_uint32),
+                ]
+
+            ed = IMAGE_EXPORT_DIRECTORY.from_address(data)
+            names_addr = data + ed.AddressOfNames
+            ord_addr = data + ed.AddressOfNameOrdinals
+            func_addr = data + ed.AddressOfFunctions
+            pat = re.compile(rb"^(\?)(interception_\w+)(@@.*)$")
+            found = {}
+            for i in range(ed.NumberOfNames):
+                na = ctypes.cast(names_addr + 4 * i,
+                                 ctypes.POINTER(ctypes.c_uint32)).contents.value
+                raw = ctypes.string_at(data + na, 128).split(b"\x00")[0]
+                if not raw.startswith(b"interception_"):
+                    continue
+                short = raw.decode("ascii")
+                if short in found:
+                    continue
+                idx = ctypes.cast(ord_addr + 2 * i,
+                                  ctypes.POINTER(ctypes.c_uint16)).contents.value
+                addr = data + ctypes.cast(func_addr + 4 * idx,
+                                          ctypes.POINTER(ctypes.c_uint32)).contents.value
+                found[short] = addr
+            if not found:
+                # No plain names - try MSVC-decorated C++ exports.
+                for i in range(ed.NumberOfNames):
+                    na = ctypes.cast(names_addr + 4 * i,
+                                     ctypes.POINTER(ctypes.c_uint32)).contents.value
+                    raw = ctypes.string_at(data + na, 192).split(b"\x00")[0]
+                    m = pat.match(raw)
+                    if not m:
+                        continue
+                    short = m.group(2).decode("ascii")
+                    if short in found:
+                        continue
+                    idx = ctypes.cast(ord_addr + 2 * i,
+                                      ctypes.POINTER(ctypes.c_uint16)).contents.value
+                    addr = data + ctypes.cast(func_addr + 4 * idx,
+                                              ctypes.POINTER(ctypes.c_uint32)).contents.value
+                    found[short] = addr
+            if not found:
+                return False
+            c_pvoid = ctypes.c_void_p
+            for short, addr in found.items():
+                try:
+                    getattr(dll, short)
+                    continue          # plain GetProcAddress already works
+                except AttributeError:
+                    pass
+                setattr(dll, short, ctypes.CFUNCTYPE(c_pvoid)(addr))
+            # v8.52b: the aliases above are plain-name fallbacks for
+            # MSVC-decorated exports; declare argtypes/restypes NOW so a
+            # later restype assignment in _build_signatures does NOT
+            # replace the alias and undo GetProcAddress success.
+            dll.interception_create_context.restype = ctypes.c_void_p
+            dll.interception_destroy_context.argtypes = [ctypes.c_void_p]
+            dll.interception_wait_with_timeout.restype = ctypes.c_int
+            dll.interception_wait_with_timeout.argtypes = \
+                [ctypes.c_void_p, ctypes.c_double]
+            dll.interception_send.restype = ctypes.c_int
+            dll.interception_send.argtypes = \
+                [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+                 ctypes.c_int]
+            if hasattr(dll, "interception_is_mouse"):
+                dll.interception_is_mouse.restype = ctypes.c_int
+                dll.interception_is_mouse.argtypes = [ctypes.c_int]
+            if hasattr(dll, "interception_first_device"):
+                dll.interception_first_device.restype = ctypes.c_int
+                dll.interception_first_device.argtypes = [ctypes.c_int]
+            if hasattr(dll, "interception_next_handle"):
+                dll.interception_next_handle.restype = ctypes.c_int
+                dll.interception_next_handle.argtypes = \
+                    [ctypes.c_void_p, ctypes.c_int]
+            return InterceptionBackend._has_exports(dll)
+        except Exception:
+            return False
 
     @classmethod
     def _load_dll(cls):
@@ -190,7 +306,12 @@ class InterceptionBackend(object):
             # probing first_target_device (an ABI-10 helper) rejected
             # perfectly good official DLLs and every user saw "selected
             # but not working" even with the driver installed.
-            if cls._has_exports(dll):
+            # v8.52 fix: the official DLL's exports are MSVC-DECORATED
+            # (?interception_send@@YA...), which plain GetProcAddress
+            # cannot find at all - _abi1_names() reads the export table
+            # directly and installs plain-name aliases. Only after that
+            # probe do we judge whether this is the real library.
+            if cls._has_exports(dll) or cls._abi1_names(dll):
                 cls._loaded_path = p if d else "(PATH search)"
                 return dll
         cls._loaded_path = loaded_path
@@ -269,12 +390,19 @@ class InterceptionBackend(object):
             dll.interception_first_target_device.restype = c.c_int
             dll.interception_first_target_device.argtypes = [c.c_void_p,
                                                              c.c_int]
-        dll.interception_first_device.restype = c.c_int
-        dll.interception_first_device.argtypes = [c.c_int]
-        dll.interception_next_handle.restype = c.c_int
-        dll.interception_next_handle.argtypes = [c.c_void_p, c.c_int]
-        dll.interception_is_mouse.restype = c.c_int
-        dll.interception_is_mouse.argtypes = [c.c_int]
+        # v8.52: legacy ABI-1 fallbacks. The official v1.0.1 DLL has no
+        # next_handle at all - device iteration there is just walking
+        # the fixed handles 1..10 and asking is_keyboard/is_mouse. Only
+        # declare what this build actually exports.
+        if hasattr(dll, "interception_first_device"):
+            dll.interception_first_device.restype = c.c_int
+            dll.interception_first_device.argtypes = [c.c_int]
+        if hasattr(dll, "interception_next_handle"):
+            dll.interception_next_handle.restype = c.c_int
+            dll.interception_next_handle.argtypes = [c.c_void_p, c.c_int]
+        if hasattr(dll, "interception_is_mouse"):
+            dll.interception_is_mouse.restype = c.c_int
+            dll.interception_is_mouse.argtypes = [c.c_int]
         dll.interception_wait_with_timeout.restype = c.c_int
         dll.interception_wait_with_timeout.argtypes = [c.c_void_p,
                                                        c.c_double]
@@ -283,8 +411,9 @@ class InterceptionBackend(object):
         dll.interception_send.restype = c.c_int
         dll.interception_send.argtypes = [c.c_void_p, c.c_int,
                                           ctypes.POINTER(STROKE), c.c_int]
-        dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
-                                                c.c_ushort]
+        if hasattr(dll, "interception_set_filter"):
+            dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
+                                                    c.c_ushort]
 
     def _find_mouse(self):
         # v8.50: first_target_device only reports devices that have ALREADY
@@ -315,19 +444,40 @@ class InterceptionBackend(object):
                 except Exception:
                     pass
                 return dev
-        for kind in (15, 14):
-            dev = self._dll.interception_next_handle(
-                self._context, self._dll.interception_first_device(kind))
-            while 0 < dev <= self._INTERCEPTION_MAX_DEVICES:
-                if self._dll.interception_is_mouse(dev):
-                    try:
-                        self._dll.interception_set_filter(
-                            self._context, dev, self._FILTER_ALL)
-                    except Exception:
-                        pass
-                    return dev
+        if hasattr(self._dll, "interception_next_handle") and \
+                hasattr(self._dll, "interception_is_mouse"):
+            # ABI-10 iteration idiom.
+            for kind in (15, 14):
                 dev = self._dll.interception_next_handle(
-                    self._context, dev)
+                    self._context, self._dll.interception_first_device(kind))
+                while 0 < dev <= self._INTERCEPTION_MAX_DEVICES:
+                    if self._dll.interception_is_mouse(dev):
+                        try:
+                            self._dll.interception_set_filter(
+                                self._context, dev, self._FILTER_ALL)
+                        except Exception:
+                            pass
+                        return dev
+                    dev = self._dll.interception_next_handle(
+                        self._context, dev)
+        elif hasattr(self._dll, "interception_is_keyboard"):
+            # v8.52: official v1.0.1 ABI-1 has no next_handle/first_device.
+            # Its documented idiom is simply walking the fixed handles
+            # 1..10 and asking is_keyboard()/is_mouse() per handle.
+            is_mouse = self._dll.interception_is_mouse
+            is_mouse.argtypes = [ctypes.c_int]
+            is_mouse.restype = ctypes.c_int
+            for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+                try:
+                    if is_mouse(dev):
+                        try:
+                            self._dll.interception_set_filter(
+                                self._context, dev, self._FILTER_ALL)
+                        except Exception:
+                            pass
+                        return dev
+                except Exception:
+                    continue
         log("Input: Interception found no mouse target device - is the "
             "driver installed (interception.exe install + reboot)? "
             "Using Windows injection.")
