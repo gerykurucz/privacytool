@@ -172,28 +172,30 @@ def _dilate8(m):
 
 def _close_gaps(m, gap):
     """
-    Morphological closing with a square (2*gap+1) structuring element,
-    implemented as separable sliding max (dilate) then sliding min
-    (erode). Joins ink pieces separated by a break of at most `gap` px
-    into one connected blob - the anti-aliased gaps that make an
+    Morphological closing with a square (2*gap+1) structuring element.
+    Joins ink pieces separated by a break of at most 2*gap px into one
+    connected blob - the anti-aliased hairline gaps that make an
     outlined button or sub-pixel rendered icon fragment into several
     detected items.
 
-    Separable means it bridges axis-aligned breaks (the common case for
-    outlines and text) without filling diagonal staircases: two blobs
-    touching only at corners are not welded into a solid block, so
-    neighbouring controls stay separate targets.
-
-    Safety properties, load-bearing for the scan pipeline:
-      * monotone - original ink is re-OR'd at the end, so closing can
-        only ADD pixels, never remove them. A weak hysteresis seed that
-        survived the pre-close cleanup cannot be thinned back below its
-        ratio floor (a naive dilate+erode could, which would change
-        detection results unpredictably);
-      * border dead zone preserved - the outermost rows/columns stay
-        cleared like scan_region's own 2 px zeroing, so no 1 px garbage
-        ring returns at capture borders;
-      * O(gap^2) vectorised array ops, no per-pixel Python loops.
+    Implementation notes (learned the hard way across v8.64/8.65):
+      * a hand-rolled "separable" square closing (dilate by each arm,
+        erode by each arm) is NOT equivalent to true square closing -
+        iterative shift-AND erosion composes into a DIAMOND-shaped SE
+        (an L1 ball), which leaves axis-aligned breaks unfilled and
+        welds diagonal staircases instead, i.e. exactly backwards from
+        what the pipeline needs. This function therefore uses cv2's
+        verified MORPH_CLOSE (bitwise-equal to the mathematical
+        definition on random masks; cv2 already ships with numpy in
+        the frozen build);
+      * monotone guard - original ink is re-OR'd afterwards, so closing
+        can only ADD pixels, never remove them. A weak hysteresis seed
+        that survived the pre-close cleanup cannot be thinned below its
+        ratio floor by the erosion stage;
+      * border dead zone preserved - the outermost gap rows/columns are
+        cleared after the operation, matching scan_region's own 2 px
+        zeroing, so no garbage ring returns at capture borders;
+      * uint8 round-trip: OpenCV does not accept bool arrays here.
     """
     try:
         g = int(float(gap))
@@ -201,17 +203,19 @@ def _close_gaps(m, gap):
         return m
     if g <= 0:
         return m
-    g = min(g, min(m.shape) // 2 - 1)   # keep every slice/pad non-degenerate
+    g = min(g, min(m.shape) // 2 - 1)   # keep every slice non-degenerate
     if g <= 0:
         return m
-    # Dilation by the square (2g+1)x(2g+1) SE = Minkowski sum of a
-    # horizontal and a vertical line SE: dilate by each arm in turn.
-    # _dilate/_erode use only forward slices with non-negative pads, so
-    # no negative-index arithmetic can leak into np.pad here (a naive
-    # symmetric-shift formulation crashed warmup with
-    # ValueError("index can't contain negative values")).
-    d = _dilate(_dilate(m, g), g)
-    e = _erode(_erode(d, g), g)
+    try:
+        import cv2
+        se = np.ones((2 * g + 1, 2 * g + 1), np.uint8)
+        e = cv2.morphologyEx(m.astype(np.uint8),
+                             cv2.MORPH_CLOSE, se).astype(bool)
+    except Exception:
+        # cv2 missing from the frozen build (or any OpenCV surprise):
+        # closing is a refinement, never a hard dependency. Fall back to
+        # the old pipeline exactly rather than kill the scan thread.
+        return m
     e |= m & ~e               # monotone: closing adds pixels, never removes ink
     e[:g, :] = False          # keep the capture-border dead zone
     e[-g:, :] = False

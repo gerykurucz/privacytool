@@ -65,6 +65,11 @@ pyinstaller --noconsole --onefile --name SnappyAI main.py
 ```
 
 (plus whatever data files / hooks your usual build command already uses).
+Since v8.66 `vision.py` uses OpenCV (`cv2.morphologyEx`) for the gap-closing
+stage, so the build environment must have `opencv-python` installed —
+PyInstaller picks it up automatically when `import cv2` resolves; if your
+build machine lacks it the app still runs (closing silently falls back to
+the old pipeline), but detection quality drops on fragmented outlines.
 Full details and the pre-ship checklist: `docs/CLIENT-BUILD.md`.
 
 ## Self-check before you build
