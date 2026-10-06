@@ -135,27 +135,53 @@ class InterceptionBackend(object):
             self._degraded = True
             return
         try:
-            self._dll = self._load_dll()
+            # v8.58: EVERY kernel-driver handshake runs behind a timeout
+            # on a daemon thread. interception.dll's DllMain enumerates
+            # devices at LoadLibrary time and interception_create_context
+            # opens the driver handles - either can block indefinitely
+            # when the filter driver is wedged or another program holds
+            # the devices. Until now those calls ran synchronously on
+            # the main GUI thread, so one blocked call meant "process
+            # exists, no window, forever" - exactly the silent-death
+            # report from users whose machine has interception.dll next
+            # to the exe. A timed-out probe parks a harmless daemon
+            # thread instead of parking the whole app.
+            load = _call_with_timeout(self._load_dll, 8.0)
+            if load is None:
+                self._reason = ("loading interception.dll did not return "
+                                "within 8 s (kernel driver not answering "
+                                "at DLL-load time)")
+                self._degraded = True
+                return
+            self._dll, frozen = load
+            if frozen:
+                self._reason = ("interception.dll appears frozen by "
+                                "antivirus software (file handle open by "
+                                "another process, scan never finishes)")
+                self._degraded = True
+                return
             if self._dll is None:
                 self._degraded = True
                 return
             self._build_signatures()
-            # v8.55: create the context in a worker thread with a
-            # generous timeout. The official ABI-1 driver opens its
-            # device handles inside create_context(); when another
-            # program already holds them (or a filter driver stalls the
-            # PnP query) that call blocks - and blocking it forever was
-            # what made the app look dead / hang for 6 s on some
-            # machines. A timed-out probe leaves the orphaned context
-            # alone; we simply never destroy it.
-            self._context = _call_with_timeout(
-                self._dll.interception_create_context, 12.0)
-            if not self._context:
+            ctx = _call_with_timeout(
+                self._dll.interception_create_context, 8.0)
+            if not ctx:
                 self._reason = ("interception_create_context did not "
-                                "return within 12 s")
+                                "return within 8 s (the driver is "
+                                "installed but not answering - reinstall "
+                                "with 'interception.exe install' from an "
+                                "admin prompt and reboot)")
                 self._degraded = True
                 return
-            self._dev = self._find_mouse()
+            self._context = ctx
+            found = _call_with_timeout(self._find_mouse, 8.0)
+            if found is None:
+                self._reason = ("device discovery did not return within "
+                                "8 s (driver installed but wedged)")
+                self._degraded = True
+                return
+            self._dev = found
             if self._dev is None:
                 self._degraded = True
         except Exception as exc:
@@ -205,9 +231,17 @@ class InterceptionBackend(object):
         if plain is not None:
             return all(n in plain for n in
                        InterceptionBackend._REQUIRED_EXPORTS)
+        # v8.57: ctypes' own lookup FIRST. The official v1.0.1 DLL
+        # exports plain dllexport'd C names, so this hits on any genuine
+        # library and we never touch the loader APIs at all.
         if all(hasattr(dll, n) for n in
                InterceptionBackend._REQUIRED_EXPORTS):
             return True
+        # Only nonstandard (decorated) rebuilds fall through to the
+        # direct GetProcAddress probe. No PE-table scan anywhere: that
+        # path loaded contract DLLs via forwarded-export resolution and
+        # silently killed the process (v8.56 regression). A DLL that
+        # fails both checks is simply not Interception - keep searching.
         return InterceptionBackend._abi1_names(dll)
 
     @staticmethod
@@ -223,20 +257,25 @@ class InterceptionBackend(object):
         #   v8.53 assumed stdcall-decorated names (interception_send@16)
         # Neither exists in the real file. What DID exist in v8.53 and
         # stays here: calling kernel32.GetProcAddress through ctypes with
-        # an explicit c_char_p (immune to the loader-hook problem), plus
-        # the raw PE export-table scan as a second path. We now probe
-        # plain names FIRST (they hit on the official DLL), then decorated
-        # sizes (for hand-built stdcall variants), and finally fall back
-        # to the PE-table scan which needs no loader calls at all.
+        # an explicit c_char_p (immune to the loader-hook problem). We
+        # probe plain names FIRST (they hit on the official DLL), then
+        # decorated sizes for hand-built stdcall variants. There is NO
+        # PE-export-table fallback any more - see the v8.58 note below;
+        # if this probe cannot find the names, the file is not a usable
+        # Interception library and _load_dll keeps searching.
         try:
             k32 = ctypes.windll.kernel32
             k32.GetProcAddress.restype = ctypes.c_void_p
             k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-            # v8.56: the REAL module handle (LoadLibraryExW-based), not
-            # ctypes' private `_handle` - passing that bookkeeping pointer
-            # to GetProcAddress returned garbage or NULL on CPython 3.8+,
-            # which is why decorated-only builds were mis-reported as
-            # "does not export the Interception functions".
+            # v8.58: this fallback must NEVER load another module. The
+            # old code called LoadLibraryExW(LOAD_LIBRARY_AS_DATAFILE)
+            # via _module_handle() when the DLL arrived through a
+            # redirected/PATH search - forwarding to api-ms-win-crt-*
+            # contract stubs and destabilising the process (the silent-
+            # death family of bugs). If we do not already know the real
+            # image base from our own explicit-path load, we simply give
+            # up on decorated-name probing; the plain ctypes lookup in
+            # _has_exports() already covers every genuine DLL.
             base = getattr(dll, "_snappy_module", 0) or 0
             if not base:
                 return False
@@ -258,179 +297,30 @@ class InterceptionBackend(object):
                         break
             if not all(n in found for n in
                        InterceptionBackend._REQUIRED_EXPORTS):
-                # Second path: read the PE export table directly. Immune
-                # to any runtime hooking of the loader APIs.
-                return InterceptionBackend._scan_export_table(dll)
+                # v8.57/58: NO PE-export-table fallback - it loaded
+                # api-ms-win-crt-* contract modules mid-startup via
+                # forwarded-export resolution and silently killed the
+                # process. If the GetProcAddress probe cannot find the
+                # four required names, this file is not a usable
+                # Interception library; _load_dll keeps searching.
+                return False
             dll._plain_exports = found       # plain name -> abs address
             dll._plain_image_base = base     # module load address
             return True
         except Exception:
             return False
 
-    @staticmethod
-    def _scan_export_table(dll):
-        """v8.56: read the export table from the FILE ON DISK, never from
-        the loaded image.
-
-        The previous revision parsed the in-memory IMAGE_EXPORT_DIRECTORY
-        and - fatally - dereferenced ctypes' private `_handle` attribute
-        as if it were an HMODULE. On CPython 3.8+ that value is just a
-        malloc'd bookkeeping pointer, so `from_address()` read garbage
-        (or raised), the whole scan returned False, and a perfectly good
-        official interception.dll was reported as "does not export the
-        Interception functions". A malformed in-memory parse could also
-        AV-kill the process silently - exactly the "process runs, no GUI,
-        no log" symptom.
-
-        This parser maps the DLL file itself (PE header -> export
-        directory -> names/ordinals/RVAs). It touches no loader APIs and
-        no live memory beyond our own file buffer, so it cannot crash
-        the process and works even when the loader is hooked. Addresses
-        are recorded as RVAs plus the module handle we actually loaded;
-        _install_plain_lookup turns them into callables."""
-        try:
-            path = getattr(dll, "_snappy_path", None)
-            if not path:
-                # PATH-search load (or test double): no file we own.
-                # Windows keeps the module mapped under its loaded name;
-                # resolving it through the loader is safe and cheap.
-                base = getattr(dll, "_snappy_module", 0) or 0
-                if not base:
-                    return False
-                import tempfile
-                cand = os.path.join(tempfile.gettempdir(),
-                                    "interception.dll")
-                path = cand if os.path.isfile(cand) else None
-            if not path or not os.path.isfile(path):
-                return False
-            with open(path, "rb") as fh:
-                blob = fh.read()
-            if len(blob) < 0x200 or blob[:2] != b"MZ":
-                return False
-            pe_off = int.from_bytes(blob[0x3C:0x40], "little")
-            if pe_off + 0xF8 > len(blob) or \
-                    blob[pe_off:pe_off + 4] != b"PE\x00\x00":
-                return False
-            coff = pe_off + 4
-            nsec = int.from_bytes(blob[coff + 2:coff + 4], "little")
-            opt_size = int.from_bytes(blob[coff + 16:coff + 18], "little")
-            magic = int.from_bytes(blob[pe_off + 24:pe_off + 26], "little")
-            opt = pe_off + 24
-            if magic == 0x20B:                  # PE32+
-                dir_rva, dir_size = (int.from_bytes(
-                    blob[opt + 136:opt + 140], "little"),
-                    int.from_bytes(blob[opt + 140:opt + 144], "little"))
-            elif magic == 0x10B:                # PE32
-                dir_rva, dir_size = (int.from_bytes(
-                    blob[opt + 120:opt + 124], "little"),
-                    int.from_bytes(blob[opt + 124:opt + 128], "little"))
-            else:
-                return False
-            if not dir_rva:
-                return False
-            sec = opt + opt_size
-            sections = []
-            for i in range(nsec):
-                e = sec + 40 * i
-                if e + 40 > len(blob):
-                    break
-                sections.append((
-                    int.from_bytes(blob[e + 12:e + 16], "little"),   # VA
-                    int.from_bytes(blob[e + 8:e + 12], "little"),    # VSize
-                    int.from_bytes(blob[e + 20:e + 24], "little"),   # raw ptr
-                    int.from_bytes(blob[e + 16:e + 20], "little")))  # raw size
-
-            def r2o(rva):
-                for va, vs, rp, rs in sections:
-                    if va <= rva < va + max(vs, rs):
-                        o = rp + (rva - va)
-                        if 0 <= o < len(blob):
-                            return o
-                return None
-
-            eo = r2o(dir_rva)
-            if eo is None or eo + 40 > len(blob):
-                return False
-            num_names = int.from_bytes(blob[eo + 24:eo + 28], "little")
-            num_funcs = int.from_bytes(blob[eo + 20:eo + 24], "little")
-            a_func = r2o(int.from_bytes(blob[eo + 28:eo + 32], "little"))
-            a_name = r2o(int.from_bytes(blob[eo + 32:eo + 36], "little"))
-            a_ord = r2o(int.from_bytes(blob[eo + 36:eo + 40], "little"))
-            if None in (a_func, a_name, a_ord) or num_names == 0:
-                return False
-            f_lo, f_hi = a_func, a_func + 4 * max(num_funcs, 1)
-
-            found = {}
-            for i in range(num_names):
-                p = a_name + 4 * i
-                if p + 4 > len(blob):
-                    break
-                nrva = int.from_bytes(blob[p:p + 4], "little")
-                no = r2o(nrva)
-                if no is None:
-                    continue
-                raw = blob[no:no + 192].split(b"\x00")[0]
-                short = InterceptionBackend._demangle(raw)
-                if short is None:
-                    continue
-                q = a_ord + 2 * i
-                if q + 2 > len(blob):
-                    break
-                idx = int.from_bytes(blob[q:q + 2], "little")
-                r = a_func + 4 * idx
-                if r + 4 > len(blob):
-                    break
-                rva = int.from_bytes(blob[r:r + 4], "little")
-                if rva == 0:
-                    continue
-                # Forwarded export: the RVA points at a name string
-                # outside the function table - resolve through target.
-                if not (f_lo <= r < f_hi):
-                    fwd = blob[r2o(rva):][:128].split(b"\x00")[0] \
-                        if r2o(rva) is not None else b""
-                    dll_name, _, fwd_name = fwd.partition(b".")
-                    try:
-                        other = ctypes.WinDLL(dll_name.decode("ascii"))
-                        addr = ctypes.cast(
-                            getattr(other,
-                                    fwd_name.split(b"@")[0].decode("ascii")),
-                            ctypes.c_void_p).value
-                        if addr:
-                            found[short] = int(addr)      # absolute, trusted
-                    except Exception:
-                        pass
-                    continue
-                found.setdefault(short, rva)              # RVA, offset later
-            if not all(n in found for n in
-                       InterceptionBackend._REQUIRED_EXPORTS):
-                return False
-            dll._plain_exports = found
-            dll._plain_rvas = True       # values are RVAs, not absolutes
-            dll._plain_code_lo = a_func  # file offsets of the RVA table
-            dll._plain_code_hi = f_hi
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def _demangle(raw):
-        # b"interception_send" -> itself; b"?interception_send@@YA..." or
-        # b"interception_send@4" -> b"interception_send". Returns the
-        # plain name only when it starts with interception_.
-        try:
-            s = raw.decode("ascii", "ignore")
-        except Exception:
-            return None
-        if s.startswith("?"):
-            s = s[1:]
-            s = s.split("@@")[0]
-        elif "@" in s:
-            head, tail = s.split("@", 1)
-            if tail.isdigit():
-                s = head
-        if s.startswith("interception_"):
-            return s
-        return None
+    # v8.58: the PE-export-table scanner of v8.56 is DELETED, not just
+    # disabled. It resolved forwarded exports by calling WinDLL() on the
+    # forward-target name found at an RVA inside our own file read - for
+    # MSVC-built DLLs that name is an api-ms-win-crt-* contract stub,
+    # and Windows' API-set shim loads the real runtime DLL into the
+    # process mid-startup. That loader interference is what made Snappy
+    # AI sit in the process list with no window whenever
+    # interception.dll was present. Nothing here may ever load a module
+    # other than the one the user pointed us at; ctypes' plain lookup
+    # plus a GetProcAddress probe on OUR OWN handle cover every genuine
+    # build between them.
 
     @staticmethod
     def _install_plain_lookup(dll):
@@ -495,8 +385,44 @@ class InterceptionBackend(object):
             pass
         return int(h) & ~0x3
 
+    @staticmethod
+    def _file_frozen(path):
+        """True when another process holds an exclusive handle on the
+        file - the classic signature of antivirus mid-scan (or a
+        quarantined stub). Windows returns ERROR_SHARING_VIOLATION; we
+        deliberately do NOT treat ACCESS_DENIED as frozen, since that is
+        normal NTFS ACL behaviour for files the user may still load.
+
+        v8.58: checked BEFORE LoadLibrary, because WinDLL() on a
+        scan-frozen file blocks inside the loader until the AV releases
+        it - unbounded, on whichever thread called us."""
+        try:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CreateFileW.restype = ctypes.c_void_p
+            k32.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint,
+                                        ctypes.c_uint, ctypes.c_void_p,
+                                        ctypes.c_uint, ctypes.c_uint,
+                                        ctypes.c_void_p]
+            INVALID = ctypes.c_void_p(-1).value
+            # GENERIC_READ(0) + FILE_SHARE_ALL + OPEN_EXISTING: pure
+            # existence-of-handle probe, never reads or locks anything.
+            h = k32.CreateFileW(os.path.abspath(path), 0, 7, None, 1, 0x80,
+                                None)
+            if h == INVALID or h is None:
+                err = ctypes.get_last_error()
+                return err == 32          # ERROR_SHARING_VIOLATION
+            k32.CloseHandle(ctypes.c_void_p(h))
+            return False
+        except Exception:
+            return False                  # probe failed -> assume fine
+
     @classmethod
     def _load_dll(cls):
+        """Returns (dll_or_None, froze_flag). Called only through
+        _call_with_timeout: even if this hangs inside WinDLL()/DllMain
+        (wedged kernel driver answering device enumeration at load
+        time), the caller gives up after its timeout and the GUI keeps
+        running on Win32."""
         loaded_path = None
         for d in cls._candidate_dirs():
             p = os.path.join(d, "interception.dll") if d else \
@@ -504,20 +430,26 @@ class InterceptionBackend(object):
             try:
                 if d and not os.path.isfile(p):
                     continue
+                if d and cls._file_frozen(p):
+                    # Do not attempt the load: it would park a thread
+                    # inside the AV-suspended loader for who-knows-how
+                    # long. Report honestly instead.
+                    cls._loaded_path = p
+                    return None, True
                 dll = ctypes.WinDLL(p)
                 loaded_path = p if d else "(PATH search)"
             except OSError:
                 continue
-            # v8.56: remember the REAL HMODULE (LoadLibaryExW's return
-            # value - the same handle WinDLL used internally) and the
-            # file path, for the RVA math in the export scan. Never use
-            # ctypes' private `_handle`: since CPython 3.8 it is a
-            # bookkeeping pointer, not an image base, and treating it as
-            # one is what made every earlier revision mis-detect good
-            # DLLs (and risked AV-killing the process silently).
+            # v8.58: the image base is recorded ONLY for explicit-path
+            # loads (d is truthy). For the PATH-search fallback we pass
+            # 0, which makes _abi1_names() a no-op - deliberately: the
+            # LoadLibraryExW probe it used could resolve api-set
+            # forwards and load contract DLLs mid-startup, the exact
+            # class of loader interference behind the silent-death
+            # reports. The plain ctypes lookup in _has_exports() needs
+            # no module handle at all and covers genuine DLLs.
             try:
-                dll._snappy_module = cls._module_handle(p if d
-                                                        else "interception.dll")
+                dll._snappy_module = (cls._module_handle(p) if d else 0)
             except Exception:
                 dll._snappy_module = 0
             dll._snappy_path = os.path.abspath(p) if d else None
@@ -539,16 +471,32 @@ class InterceptionBackend(object):
             if cls._has_exports(dll) or cls._abi1_names(dll):
                 cls._install_plain_lookup(dll)
                 cls._loaded_path = p if d else "(PATH search)"
-                return dll
+                return dll, False
         cls._loaded_path = loaded_path
-        return None
+        return None, False
+
+    @classmethod
+    def _load_dll_probe(cls):
+        """Timeout-safe wrapper around _load_dll for callers that must
+        never block (the GUI thread). Returns (dll_or_None, frozen);
+        (None, True) also means 'the load call itself hung'."""
+        if not IS_WINDOWS:
+            return None, False
+        out = _call_with_timeout(cls._load_dll, 8.0)
+        if out is None:
+            cls._loaded_path = getattr(cls, "_loaded_path", None)
+            return None, True          # hung inside loader/DllMain
+        return out
 
     @classmethod
     def available(cls):
         """Cheap check for the GUI: DLL present AND driver devices alive.
 
         Safe off Windows and without the library: returns False, never
-        raises. Result is cached after the first probe."""
+        raises. Result is cached after the first probe. v8.58: every
+        kernel-facing step runs behind _call_with_timeout - this is
+        called from a worker thread in gui.py but must still be unable
+        to park anything forever."""
         if not IS_WINDOWS:
             return False
         cached = getattr(cls, "_avail_cache", None)
@@ -556,13 +504,11 @@ class InterceptionBackend(object):
             return cached
         ok = False
         try:
-            dll = cls._load_dll()
-            if dll is not None:
+            dll, frozen = cls._load_dll_probe()
+            if dll is not None and not frozen:
                 dll.interception_create_context.restype = ctypes.c_void_p
-                # v8.55: timed - a wedged/busy driver must never block
-                # the GUI thread that asks "is Interception available?".
                 ctx = _call_with_timeout(
-                    dll.interception_create_context, 12.0)
+                    dll.interception_create_context, 6.0)
                 if ctx:
                     dll.interception_destroy_context.argtypes = \
                         [ctypes.c_void_p]
