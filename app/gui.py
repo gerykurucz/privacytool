@@ -507,20 +507,19 @@ META = {
                           "anchored search.",
                           "bool", None),
     "center_follow": ("Keep the cursor on it",
-                      "Works only while \"Watch the screen centre \"\n"
-                      "only\" is on. After you pick an item inside the\n"
-                      "watched square - by a click, or by resting the\n"
-                      "cursor on it for a moment - the cursor stays\n"
-                      "parked on it and follows it around, even when\n"
-                      "the item moves (a scrolling plane, an animated\n"
-                      "panel). No accent colour needed: without one it\n"
-                      "locks on straight away to the best high-\n"
-                      "contrast item; with a colour set it waits for\n"
-                      "the brief dwell first. It never fights you:\n"
-                      "holding any button pauses it, and it lets go\n"
-                      "about a second after the item disappears. Turn\n"
-                      "on \"Lead moving items\" too for smooth fast\n"
-                      "chasing.",
+                      "Needs \"Watch the screen centre only\" on. Once "
+                      "an item inside the watched square is picked - "
+                      "by your click, or by resting the cursor on it - "
+                      "the cursor stays parked on it and keeps following "
+                      "it even while the item moves (a scrolling plane, "
+                      "an animated panel). No colour needed: without "
+                      "\"My colour(s)\" set it locks straight onto the "
+                      "best high-contrast item; with a colour set it "
+                      "waits for the brief dwell first. It never fights "
+                      "you: holding any mouse button pauses it, and it "
+                      "lets go about a second after the item "
+                      "disappears. Turn on \"Lead moving items\" as "
+                      "well for smooth fast chasing.",
                       "bool", None),
     "follow_learn": ("What the memory may learn",
                      "Only items in my colour: a misclick that snapped "
@@ -698,18 +697,16 @@ META = {
     # app act with no gesture from the user, so its label leads with the
     # consequence ("clicks on its own") rather than the mechanism.
     "auto_click": ("Click items by itself",
-                   "The screen centre is scanned by itself and the best "
-                   "item is clicked, without you clicking anything - "
-                   "turning this on IS the request. With 'My colour(s)' "
-                   "set it clicks only items in your colour; without a "
-                   "colour it clicks the highest-CONTRAST item instead "
-                   "(crisp buttons, icons and controls only - raise the "
-                   "crispness setting below if it picks too eagerly). It "
-                   "never clicks while paused, never clicks "
-                   "Snappy AI's own windows, never clicks a colour on "
-                   "the Never-click list, and stops at the limit below. "
-                   "Turn this on only where you want it, and press Pause "
-                   "at any time to take the mouse back.",
+                   "Scans the screen centre on its own and clicks the "
+                   "best item - no click from you needed; turning this "
+                   "on IS the request. With 'My colour(s)' set it "
+                   "clicks only items in your colour; without a colour "
+                   "it clicks the highest-contrast item instead (raise "
+                   "'How crisp an auto-click target must be' if it "
+                   "picks too eagerly). Never while paused, never on "
+                   "Snappy AI's own windows, never on a Never-click "
+                   "colour, and it stops at the limit below. Press "
+                   "Pause any time to take the mouse back.",
                    "bool", None),
     "auto_click_interval": ("Seconds between auto-clicks",
                             "How often the screen centre is re-checked "
@@ -918,27 +915,19 @@ PROSE = {
     "note.colors":
         "The two lists at the top choose which colours Snappy AI "
         "prefers or refuses. Each shows its colours as boxes on the "
-        "right, fifteen at most, and clicking a box removes that "
-        "colour again; an empty list shows a crossed-out box and "
-        "counts as off. 'Add to preferred colours' and 'Add to "
-        "refused colours' put the colour standing in the picker into "
-        "the matching list. Current RGB Value shows three boxes - "
-        "each as wide as five colour boxes, so the row spans the same "
-        "fifteen boxes as everything below - that glow with how much "
-        "red, green and blue the colour in the picker holds; the row "
-        "follows the picker and cannot be typed into. The picker "
-        "below mixes a colour like a paint program; everything beside "
-        "it sits on the right side of the window, with the same gap "
-        "to the edge as the settings above, and every row spans the "
-        "same fifteen-box width: the tall showcase with its #value "
-        "drawn inside, then the fifteen preset swatches, the two add "
-        "buttons, and the screen row - 'Pick color from screen' takes "
-        "the single colour under the cursor, 'Suggest colors from "
-        "screen' fills fifteen boxes of its own with colours it finds "
-        "around the cursor, and clicking one of them loads it into "
-        "the picker. The showcase is tall on purpose: it lets the "
-        "suggestion boxes end exactly level with the colour slider on "
-        "the left.",
+        "right, fifteen at most; clicking a box removes that colour "
+        "again, and an empty list shows a crossed-out box and counts "
+        "as off. 'Add to preferred colours' and 'Add to refused "
+        "colours' put the colour standing in the picker into the "
+        "matching list. 'Current RGB Value' is three glow boxes - "
+        "brighter means more red, green or blue in the picked colour; "
+        "it follows the picker and cannot be typed into. The picker "
+        "mixes a colour like a paint program. Beside it: fifteen "
+        "preset swatches load a colour into the picker; 'Pick color "
+        "from screen' takes the single colour under the cursor (after "
+        "a 3 s countdown); 'Suggest colors from screen' fills a row "
+        "with the main UI colours found around the cursor - click one "
+        "to load it into the picker.",
     # v8.42: the read-only R,G,B row under the two colour lists.
     # v8.43: its three boxes are no longer numbers - each one glows
     # with how much of its channel the picked colour holds.
@@ -2663,27 +2652,42 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     desc_row.pack(fill="x", padx=10)
 
     desc_var = tk.StringVar(value=i18n.L("desc.default"))
+    # v8.51: multi-line bar. A single-line label wrapped only as far
+    # as the window grew tall; long descriptions (and longer
+    # translations) were clipped outright - "fully visible" now means
+    # the bar takes up to five lines and GROWS its own height, so no
+    # setting's text is ever cut off.
     desc_bar = tk.Label(desc_row, textvariable=desc_var, font=F_DESC,
                         bg=pal["desc_bg"], fg=pal["muted"], anchor="w",
                         justify="left", padx=12, pady=6, wraplength=660)
     kit.reg(desc_bar, "desc")
     desc_bar.pack(side="left", fill="both", expand=True)
 
-    def _desc_fit(_event=None):
-        """A translation can be much longer than the English; a fixed
-        wraplength would clip it on a narrow window, so re-fit to the
-        row's live width (v8.40)."""
+    DESC_MAX_LINES = 5          # normal hover texts fit well inside
+    DESC_MAX_CHARS = 1900       # absolute ceiling for huge locales
+
+    def _desc_height(_event=None):
+        """Fit the bar's own line count to the CURRENT text at the
+        CURRENT width - never more than DESC_MAX_LINES, so one long
+        description cannot push the tabs off a small screen."""
         try:
             w = desc_row.winfo_width()
             if w > 80:
                 want = max(160, w - 24)
                 if str(desc_bar.cget("wraplength")) != str(want):
                     desc_bar.configure(wraplength=want)
+                txt = desc_var.get()
+                lines = 0
+                for para in txt.split("\n"):
+                    lines += max(1, len(para) // int(want * 0.92) + 1)
+                want_h = min(DESC_MAX_LINES, max(2, lines))
+                if int(desc_bar.cget("height")) != want_h:
+                    desc_bar.configure(height=want_h)
         except tk.TclError:
             pass
 
-    desc_row.bind("<Configure>", _desc_fit)
-    _desc_fit()
+    desc_row.bind("<Configure>", _desc_height)
+    _desc_height()
 
     # v8.40: the description bar remembers WHERE its current text came
     # from, so a language switch can re-translate it in place.  Without
@@ -2697,12 +2701,14 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         for the default hint."""
         desc_src[0] = fn
         desc_var.set(fn() if fn else i18n.L("desc.default"))
+        _desc_height()
 
     def _redesc():
         if not _live(desc_bar):
             return False
         desc_var.set(desc_src[0]() if desc_src[0]
                      else i18n.L("desc.default"))
+        _desc_height()
         return True
 
     R(_redesc)
