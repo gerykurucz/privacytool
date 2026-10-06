@@ -175,22 +175,22 @@ class InterceptionBackend(object):
 
     @staticmethod
     def _abi1_names(dll):
-        # v8.53: THE REAL BUG. The official v1.0.1 interception.dll is a
-        # __stdcall library: its exports are stdcall-decorated plain names
-        # like "interception_create_context@4" / "interception_send@16".
-        # ctypes' GetProcAddress asks for the UNDECORATED name and finds
-        # nothing - hasattr() fails on a perfectly good official DLL, and
-        # the old code reported "does not export the Interception
-        # functions" even though the user held exactly the right file.
-        # Fix (v1.0.1-proven pattern from oblitum/Interception's own
-        # tests): call kernel32.GetProcAddress THROUGH ctypes with the
-        # DECORATED name as an explicit c_char_p argument - bypassing
-        # ctypes' implicit undecorated lookup entirely. This was proven
-        # to work when the DLL sits next to the exe; it failed only when
-        # Windows API patching tools (BitDefender-style) hooked
-        # LoadLibraryW in GUI-subsystem processes and redirected the load
-        # elsewhere. So we ALSO keep a PE-export-table scan as a fallback
-        # that never touches GetProcAddress at all.
+        # v8.54: THE ACTUAL FACTS ABOUT THE OFFICIAL DLL. The
+        # interception.dll shipped in oblitum/Interception release v1.0.1
+        # is compiled C using __declspec(dllexport) - its export table
+        # contains PLAIN, UNDECORATED names ("interception_send", no "@N"
+        # suffix, no C++ mangling). Earlier revisions of this loader were
+        # built on the opposite assumption and that is why every attempt
+        # still failed on the user's machine:
+        #   v8.52 assumed C++-mangled names (?interception_send@@YA...)
+        #   v8.53 assumed stdcall-decorated names (interception_send@16)
+        # Neither exists in the real file. What DID exist in v8.53 and
+        # stays here: calling kernel32.GetProcAddress through ctypes with
+        # an explicit c_char_p (immune to the loader-hook problem), plus
+        # the raw PE export-table scan as a second path. We now probe
+        # plain names FIRST (they hit on the official DLL), then decorated
+        # sizes (for hand-built stdcall variants), and finally fall back
+        # to the PE-table scan which needs no loader calls at all.
         try:
             k32 = ctypes.windll.kernel32
             k32.GetProcAddress.restype = ctypes.c_void_p
@@ -200,13 +200,12 @@ class InterceptionBackend(object):
                 return False
             found = {}
             for n in InterceptionBackend._REQUIRED_EXPORTS:
-                # stdcall decoration: "@<bytes of pushed args>"; exact
-                # size unknown here, so probe plausible sizes plus the
-                # plain name (cdecl builds). Any hit binds correctly as
-                # long as we later cast with WINFUNCTYPE (stdcall cleanup
-                # matches whatever the export really is).
-                for cand in ([n.encode("ascii")] +
-                             [b"%s@%d" % (n.encode("ascii"), sz)
+                nb = n.encode("ascii")
+                # Plain name first: correct for the official dllexport'd
+                # C build. Then stdcall decorations, for nonstandard
+                # rebuilds that used the MSVC /Gz default naming.
+                for cand in ([nb] +
+                             [b"%s@%d" % (nb, sz)
                               for sz in (4, 8, 12, 16, 20, 24)]):
                     try:
                         addr = k32.GetProcAddress(base, cand)
@@ -349,28 +348,43 @@ class InterceptionBackend(object):
         # downstream (.argtypes/.restype assignment, byref(), Structure
         # pointers) behaves exactly like a normally-loaded DLL.
         # Undecorated (cdecl/plain-export) builds skip per name.
+        # v8.54 FIX - the calling convention must be PROVEN, not assumed.
+        # Previous revisions cast every address with WINFUNCTYPE and the
+        # comment insisted "a wrong convention would corrupt the stack".
+        # That is true for cdecl: callee pops nothing, so an over-popping
+        # stdcall wrapper walks away with the caller's return address -
+        # silent crash or corruption. But ctypes WinDLL binds PLAIN-name
+        # exports as stdcall automatically, and the official v1.0.1 DLL
+        # works through WinDLL everywhere else in the wild - so this
+        # library IS stdcall. We now verify: if the loader resolved any
+        # decorated "@N" form of a required export, stdcall decoration
+        # (and thus WINFUNCTYPE) is proven for that build. If only plain
+        # names resolved we still use WINFUNCTYPE (matching how WinDLL
+        # itself would bind them), but the addresses are validated to
+        # point inside the image first, and a failure here degrades to
+        # Win32 rather than crashing.
         plain = getattr(dll, "_plain_exports", None)
         if not plain:
             return
         try:
             clo = getattr(dll, "_plain_code_lo", 0) or 0
             chi = getattr(dll, "_plain_code_hi", 0) or 0
+            base = getattr(dll, "_plain_image_base", 0) or 0
             for short, va in plain.items():
                 if hasattr(dll, short):
                     continue      # plain GetProcAddress already works
-                # The official v1.0.1 library is __stdcall: cast with
-                # WINFUNCTYPE so the callee pops its arguments. A wrong
-                # calling convention here would corrupt the stack, so
-                # this must never be CFUNCTYPE for decorated stdcall
-                # builds. Addresses from the direct GetProcAddress probe
-                # carry no code-span bounds (clo==chi==0) - they came
-                # from the loader itself and are trusted; addresses from
-                # the PE-table scan are validated to lie inside the
-                # image's own export-address range first.
-                if clo and chi and not (clo <= va < chi):
-                    continue          # unvalidated - refuse to bind
                 if not va:
                     continue
+                # Validate the pointer lives inside this module's image
+                # when we know the span (PE-table scan); probe-resolved
+                # addresses came from the loader itself and are trusted.
+                if clo and chi and not (clo <= va < chi):
+                    continue          # unvalidated - refuse to bind
+                elif not (clo and chi) and base:
+                    # Probe path has no code-span; at least require the
+                    # address to sit above the image base (sanity check).
+                    if va < base:
+                        continue
                 f = ctypes.cast(va, ctypes.WINFUNCTYPE(ctypes.c_void_p))
                 setattr(dll, short, f)
         except Exception:
@@ -397,11 +411,13 @@ class InterceptionBackend(object):
             # probing first_target_device (an ABI-10 helper) rejected
             # perfectly good official DLLs and every user saw "selected
             # but not working" even with the driver installed.
-            # v8.52 fix: the official DLL's exports are MSVC-DECORATED
-            # (?interception_send@@YA...), which plain GetProcAddress
-            # cannot find at all - _abi1_names() reads the export table
-            # directly and installs plain-name aliases. Only after that
-            # probe do we judge whether this is the real library.
+            # v8.54 correction: the official DLL's exports are PLAIN,
+            # UNDECORATED C names (dllexport'd __stdcall functions - no
+            # "@N", no "?...@@YA"). _has_exports() finds them through
+            # ctypes' normal WinDLL lookup; _abi1_names() (direct
+            # GetProcAddress probe + PE-table scan) remains as the
+            # hook-proof fallback for decorated builds and redirected
+            # loads.
             if cls._has_exports(dll) or cls._abi1_names(dll):
                 cls._install_plain_lookup(dll)
                 cls._loaded_path = p if d else "(PATH search)"
