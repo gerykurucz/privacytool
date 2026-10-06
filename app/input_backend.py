@@ -175,6 +175,23 @@ class InterceptionBackend(object):
                 self._degraded = True
                 return
             self._context = ctx
+            # v8.59: THE ORDERING BUG BEHIND "device discovery did not
+            # return within 8 s" on HEALTHY installs. Interception's ABI-1
+            # interception_wait()/interception_wait_with_timeout() do NOT
+            # merely poll - the FIRST call attaches the user-mode filter
+            # to every installed device, which requires each device to
+            # answer. An idle mouse answers nothing until real traffic
+            # arrives, so that first wait blocks for its whole timeout.
+            # Our old code called wait_with_timeout(ctx, 0.2) as a
+            # "wake-up" before the static-range walk; with PyInstaller's
+            # GIL switch interval (default 5 ms) the parked worker never
+            # got scheduled inside 8 s and _find_mouse timed out - even
+            # though the driver was perfectly alive (create_context had
+            # just succeeded). The official ABI-1 discovery idiom is the
+            # static-range walk of is_mouse(1..10), which reads the
+            # driver's installed-device TABLE and needs no device
+            # traffic at all. So: discover first; only wake devices via
+            # a short bounded wait if the table says there are none.
             found = _call_with_timeout(self._find_mouse, 8.0)
             if found is None:
                 self._reason = ("device discovery did not return within "
@@ -183,6 +200,26 @@ class InterceptionBackend(object):
                 return
             self._dev = found
             if self._dev is None:
+                # Cold-boot / idle case: ask the driver to attach to the
+                # devices once (bounded), then re-walk the table. This
+                # runs on a daemon thread behind a timeout, so even a
+                # wedged wait here cannot park the GUI.
+                def _wake_and_walk():
+                    try:
+                        self._dll.interception_wait_with_timeout.argtypes = \
+                            [ctypes.c_void_p, ctypes.c_double]
+                        self._dll.interception_wait_with_timeout(
+                            self._context, 0.2)
+                    except Exception:
+                        pass
+                    return self._find_mouse()
+
+                found = _call_with_timeout(_wake_and_walk, 4.0)
+                self._dev = found
+            if self._dev is None:
+                self._reason = ("the driver answered but reports no mouse "
+                                "device (is the mouse connected through a "
+                                "driver the filter does not see?)")
                 self._degraded = True
         except Exception as exc:
             log("Input: Interception init failed (%r); using Windows "
@@ -611,18 +648,19 @@ class InterceptionBackend(object):
                                                     c.c_ushort]
 
     def _find_mouse(self):
-        # v8.50: first_target_device only reports devices that have ALREADY
-        # sent input since the context was created - a freshly booted or
-        # idle mouse makes it return 0 and the backend wrongly degraded to
-        # Win32 ("driver not installed" even though it was). Interception's
-        # own idiom is wait() with a short timeout, which also wakes idle
-        # devices; fall back to iterating the static device range 1..10.
-        try:
-            self._dll.interception_wait_with_timeout.argtypes = \
-                [ctypes.c_void_p, ctypes.c_double]
-            self._dll.interception_wait_with_timeout(self._context, 0.2)
-        except Exception:
-            pass
+        # v8.59: NO blocking wait here any more. The old opening act -
+        # wait_with_timeout(ctx, 0.2) as a "wake-up" before the walk -
+        # was itself the hang: ABI-1's FIRST wait call attaches the
+        # filter to every installed device and waits for them to answer,
+        # an idle mouse answers nothing, so the call blocked for its
+        # full timeout inside the 8 s discovery budget (PyInstaller's
+        # 5 ms GIL switch interval meant the parked worker never got
+        # rescheduled in time) -> false "device discovery did not return
+        # within 8 s (driver installed but wedged)" on healthy installs.
+        # Device wake-up now happens ONLY as a bounded fallback in
+        # __init__ after this function has already reported the table
+        # empty. This function must stay pure-table: is_mouse(1..10)
+        # reads the driver's installed-device list without traffic.
         # v8.55: THE official ABI-1 discovery idiom is the static-range
         # walk below (is_keyboard()/is_mouse() over handles 1..10) - it
         # needs no device traffic at all, so it finds an idle mouse on a
