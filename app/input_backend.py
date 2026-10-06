@@ -70,6 +70,7 @@ class Win32Backend(object):
                             else win32rt.MOUSEEVENTF_LEFTUP)
         win32rt.user32.SendInput(1, ctypes.byref(inp),
                                  ctypes.sizeof(win32rt.INPUT))
+        return True   # this backend never degrades - it IS the fallback
 
     def ok_for_button(self):
         return True
@@ -246,20 +247,36 @@ class InterceptionBackend(object):
             log("Input: Interception %s failed; falling back to Windows "
                 "injection for the rest of this session." % (where,))
 
+    # Longest distance we will travel as relative strokes. Beyond this
+    # a warp is faster and cannot undershoot; games that track raw motion
+    # still see the button stroke's motion bits land on the real cursor.
+    _STEP = 128
+    _MAX_STROKE_TRAVEL = 400
+
     def move(self, x, y):
-        """Warp to absolute (x, y) as small relative strokes with a
-        settle-and-correct loop. Driver-level motion travels through
-        the same pipeline as a physical mouse, so pointer speed and DPI
-        apply exactly as they would for a hand - the correction loop
-        converges regardless."""
+        """Move the cursor to absolute (x, y).
+
+        Short hops go as relative strokes with a settle-and-correct
+        loop (driver-level motion passes through pointer speed and DPI
+        exactly like a hand). Distances beyond _MAX_STROKE_TRAVEL use a
+        SetCursorPos warp instead: four 128 px strokes can only cover
+        ~512 px and the loop silently stops short of farther targets,
+        leaving the next click at the wrong place. The warp is honest
+        because the caller treats every move as a teleport anyway.
+        """
         import win32rt
+        tx, ty = int(x), int(y)
         try:
             cx, cy = win32rt.get_cursor_pos()
         except Exception:
             self.note_failure("cursor read")
+            win32rt.user32.SetCursorPos(tx, ty)   # best effort
             return
-        tx, ty = int(x), int(y)
         if (cx, cy) == (tx, ty):
+            return
+        if abs(tx - cx) > self._MAX_STROKE_TRAVEL or \
+           abs(ty - cy) > self._MAX_STROKE_TRAVEL:
+            win32rt.user32.SetCursorPos(tx, ty)
             return
         for _ in range(4):
             dx = max(-self._STEP, min(self._STEP, tx - cx))
@@ -268,6 +285,9 @@ class InterceptionBackend(object):
             s.mouse.type = self._IS_MOUSE_MOVE
             s.mouse.x, s.mouse.y = dx, dy
             self._send(s, "move")
+            if self._degraded:
+                win32rt.user32.SetCursorPos(tx, ty)  # finish the trip
+                return
             time.sleep(0.001)
             try:
                 cx, cy = win32rt.get_cursor_pos()
@@ -276,28 +296,44 @@ class InterceptionBackend(object):
                 return
             if (cx, cy) == (tx, ty):
                 break
-
-    _STEP = 128
+        else:
+            # Corrector never converged (acceleration fighting the
+            # strokes): do not leave the click short - warp home.
+            try:
+                if win32rt.get_cursor_pos() != (tx, ty):
+                    win32rt.user32.SetCursorPos(tx, ty)
+            except Exception:
+                pass
 
     def button(self, down):
+        # interception.h: a stroke that changes button state must ALSO
+        # carry the motion bits, or the driver drops it silently -
+        # without IS_MOUSE_MOVE every click through this backend vanishes.
         s = self._STROKE()
-        s.mouse.type = self._IS_MOUSE_LEFT
+        s.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
+        s.mouse.x, s.mouse.y = 0, 0
         s.mouse.buttons = 1 if down else 0
         self._send(s, "button")
+        return self.ok_for_button()
 
     # -- internals ------------------------------------------------------
     def _send(self, stroke, what):
+        """Deliver one stroke. Returns True on success. NEVER swallows a
+        failure silently: any refused/errored send degrades the backend
+        AND returns False, so callers can hand the event to Win32."""
         with self._lock:
             if self._degraded:
-                return
+                return False
             try:
                 n = self._dll.interception_send(self._context, self._dev,
                                                 ctypes.byref(stroke), 1)
             except Exception:
                 self.note_failure(what)
-                return
+                return False
             if not n:
                 self.note_failure(what)
+                return False
+            return True
 
 
 def make_input_backend(cfg):

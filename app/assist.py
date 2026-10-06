@@ -571,8 +571,16 @@ class App(object):
         user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def _button(self, down):
-        """One left-button transition through the active input backend."""
-        self._input.button(down)
+        """One left-button transition through the active input backend.
+
+        The backend's button() reports whether the stroke really went
+        out (False = it degraded mid-call). A lost transition would
+        leave the logical button stuck (down never followed by up), so
+        on any refusal we hand THIS event to Win32 SendInput right away.
+        """
+        if not self._input.button(down):
+            self._send_button(MOUSEEVENTF_LEFTDOWN if down
+                              else MOUSEEVENTF_LEFTUP)
 
     def _warp(self, x, y):
         """Move the cursor through the active input backend."""
@@ -1879,6 +1887,14 @@ class App(object):
             return True
 
         cx, cy = cf["x"], cf["y"]
+        # The sighting that produced this position is alive RIGHT NOW.
+        # Refresh its timestamp: the click worker writes cf["when"] at
+        # scan rate while clicks flow, but a pure chase (no clicks) was
+        # never refreshed here - after 1 s the expiry above declared the
+        # lock stale, dropped it, and re-armed via dwell every second
+        # (visible stutter on scroll planes). Fresh sightings keep the
+        # chase continuous; only genuinely blind seconds let go.
+        cf["when"] = time.perf_counter()
         nx, ny = self._apply_motion_lead(cx, cy)
         px, py = get_cursor_pos()
         if math.hypot(nx - px, ny - py) > 2.0:
@@ -2286,8 +2302,15 @@ class App(object):
                     announced = self._auto_armed
                     self._auto_armed = True
                 if not announced:
-                    what = self.cfg.get("accent_color") or \
-                        "high-contrast items"
+                    # Announce what the scan will actually hunt, using
+                    # the same parse as the gate itself. The raw config
+                    # value is NOT safe to print: "off" and other junk
+                    # are truthy strings that parse to no accents, and
+                    # printing them claimed a colour hunt that never
+                    # happens (the scan runs contrast-first).
+                    acc = _parse_accents(self.cfg.get("accent_color", "off"))
+                    what = ("colour %s" % self.cfg.get("accent_color")
+                            if acc else "high-contrast items")
                     log("Auto-click is ON: scanning for %s every %.3gs."
                         % (what, _gap()))
 
