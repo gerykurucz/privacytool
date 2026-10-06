@@ -1,1 +1,5 @@
-(empty)
+build/
+app/__pycache__/
+SnappyAI.exe
+config.json
+interception.dll
