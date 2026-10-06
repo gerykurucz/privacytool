@@ -45,6 +45,30 @@ import time
 from core import IS_WINDOWS, log
 
 
+def _call_with_timeout(fn, timeout, *args):
+    """Run fn(*args) on a daemon thread; return its result, or None if it
+    has not answered within `timeout` seconds. The ctypes call itself is
+    never cancellable, so a wedged driver leaves one parked daemon
+    thread behind - harmless for a GUI process that would otherwise hang
+    at startup forever."""
+    box = {}
+
+    def run():
+        try:
+            box["result"] = fn(*args)
+        except Exception as exc:      # e.g. OSError from a bad handle
+            box["error"] = exc
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return None                   # timed out: driver did not answer
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
 class Win32Backend(object):
     """The default: SetCursorPos warps plus SendInput button events.
 
@@ -115,7 +139,16 @@ class InterceptionBackend(object):
                 self._degraded = True
                 return
             self._build_signatures()
-            self._context = self._dll.interception_create_context()
+            # v8.55: create the context in a worker thread with a
+            # generous timeout. The official ABI-1 driver opens its
+            # device handles inside create_context(); when another
+            # program already holds them (or a filter driver stalls the
+            # PnP query) that call blocks - and blocking it forever was
+            # what made the app look dead / hang for 6 s on some
+            # machines. A timed-out probe leaves the orphaned context
+            # alone; we simply never destroy it.
+            self._context = _call_with_timeout(
+                self._dll.interception_create_context, 12.0)
             if not self._context:
                 self._degraded = True
                 return
@@ -441,24 +474,47 @@ class InterceptionBackend(object):
             dll = cls._load_dll()
             if dll is not None:
                 dll.interception_create_context.restype = ctypes.c_void_p
-                ctx = dll.interception_create_context()
+                # v8.55: timed - a wedged/busy driver must never block
+                # the GUI thread that asks "is Interception available?".
+                ctx = _call_with_timeout(
+                    dll.interception_create_context, 12.0)
                 if ctx:
                     dll.interception_destroy_context.argtypes = \
                         [ctypes.c_void_p]
-                    # Probe driver liveness WITHOUT requiring any device
-                    # input: a short blocking wait wakes idle devices too.
-                    # (iterate() is an ABI-10 helper absent from official
-                    # release DLLs, so it can't be used here.)
-                    dll.interception_wait_with_timeout.restype = ctypes.c_int
-                    dll.interception_wait_with_timeout.argtypes = \
-                        [ctypes.c_void_p, ctypes.c_double]
-                    try:
-                        # Any return >= 0 means the driver answered; the
-                        # call only fails outright if no driver is there.
-                        dll.interception_wait_with_timeout(ctx, 0.15)
-                        ok = True
-                    except Exception:
-                        ok = False
+                    # Driver liveness WITHOUT requiring any device input:
+                    # the official ABI-1 idiom is asking is_mouse() for
+                    # the fixed handles 1..10 - it answers from the
+                    # driver's installed-device table, so an idle mouse
+                    # on a cold boot still counts as alive. (The old
+                    # wait_with_timeout probe blocked until real mouse
+                    # traffic arrived and then reported the healthy
+                    # driver as dead.)
+                    if hasattr(dll, "interception_is_mouse"):
+                        dll.interception_is_mouse.restype = ctypes.c_int
+                        dll.interception_is_mouse.argtypes = [ctypes.c_int]
+
+                        def _walk():
+                            for dev in range(1,
+                                             cls._INTERCEPTION_MAX_DEVICES
+                                             + 1):
+                                try:
+                                    if dll.interception_is_mouse(dev):
+                                        return True
+                                except Exception:
+                                    continue
+                            return False
+
+                        ok = bool(_call_with_timeout(_walk, 6.0))
+                    else:
+                        dll.interception_wait_with_timeout.restype = \
+                            ctypes.c_int
+                        dll.interception_wait_with_timeout.argtypes = \
+                            [ctypes.c_void_p, ctypes.c_double]
+                        try:
+                            dll.interception_wait_with_timeout(ctx, 0.15)
+                            ok = True
+                        except Exception:
+                            ok = False
                     dll.interception_destroy_context(ctx)
         except Exception:
             ok = False
@@ -536,6 +592,31 @@ class InterceptionBackend(object):
             self._dll.interception_wait_with_timeout(self._context, 0.2)
         except Exception:
             pass
+        # v8.55: THE official ABI-1 discovery idiom is the static-range
+        # walk below (is_keyboard()/is_mouse() over handles 1..10) - it
+        # needs no device traffic at all, so it finds an idle mouse on a
+        # cold boot. Run it FIRST. The previous order relied on
+        # wait_with_timeout "waking" devices, but interception_wait()
+        # never enumerates anything by itself: on an untouched machine
+        # the walk ran only after the ABI-10 fast path (absent from the
+        # release DLL), while the wait-based probe timed out -> false
+        # "kernel driver did not answer" even with the driver installed.
+        if hasattr(self._dll, "interception_is_mouse") and \
+                not hasattr(self._dll, "interception_next_handle"):
+            is_mouse = self._dll.interception_is_mouse
+            is_mouse.argtypes = [ctypes.c_int]
+            is_mouse.restype = ctypes.c_int
+            for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+                try:
+                    if is_mouse(dev):
+                        try:
+                            self._dll.interception_set_filter(
+                                self._context, dev, self._FILTER_ALL)
+                        except Exception:
+                            pass
+                        return dev
+                except Exception:
+                    continue
         for kind in (15, 14):     # MOUSE then MOUSE_ABSOLUTE
             # first_target_device is an ABI-10 helper; the official
             # v1.0.1 release DLL does not export it. Skip the fast path
