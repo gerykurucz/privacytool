@@ -195,40 +195,29 @@ def _close_gaps(m, gap):
         ring returns at capture borders;
       * O(gap^2) vectorised array ops, no per-pixel Python loops.
     """
-    if gap <= 0:
+    try:
+        g = int(float(gap))
+    except (TypeError, ValueError):
         return m
-    g = int(gap)
-    d = m.copy()
-    # Sliding OR over the cross arms = dilation by the square SE
-    # (the Minkowski sum of the horizontal and vertical lines).
-    for k in range(1, g + 1):
-        d[k:, :] |= m[:-k, :]
-        d[:-k, :] |= m[k:, :]
-        d[:, k:] |= m[:, :-k]
-        d[:, :-k] |= m[:, k:]
-    out = np.ones_like(m)
-    # Sliding AND over every cross offset up to reach g = erosion by the
-    # square SE (separable: vertical bar pass, then horizontal line pass).
-    for k in range(-g, g + 1):
-        if k < 0:
-            v = d[:d.shape[0] + k, :] & d[-k:, :]
-            out &= np.pad(v, ((-k, k), (0, 0)), constant_values=False)
-            h = d[:, :d.shape[1] + k] & d[:, -k:]
-            out &= np.pad(h, ((0, 0), (-k, k)), constant_values=False)
-        elif k == 0:
-            continue
-        else:
-            v = d[k:, :] & d[:-k, :]
-            out &= np.pad(v, ((k, -k), (0, 0)), constant_values=False)
-            h = d[:, k:] & d[:, :-k]
-            out &= np.pad(h, ((0, 0), (k, -k)), constant_values=False)
-    out &= d                    # subset of the dilation by construction
-    out |= m & ~out             # ...but never removes original ink
-    out[:g, :] = False          # keep the capture-border dead zone
-    out[-g:, :] = False
-    out[:, :g] = False
-    out[:, -g:] = False
-    return out
+    if g <= 0:
+        return m
+    g = min(g, min(m.shape) // 2 - 1)   # keep every slice/pad non-degenerate
+    if g <= 0:
+        return m
+    # Dilation by the square (2g+1)x(2g+1) SE = Minkowski sum of a
+    # horizontal and a vertical line SE: dilate by each arm in turn.
+    # _dilate/_erode use only forward slices with non-negative pads, so
+    # no negative-index arithmetic can leak into np.pad here (a naive
+    # symmetric-shift formulation crashed warmup with
+    # ValueError("index can't contain negative values")).
+    d = _dilate(_dilate(m, g), g)
+    e = _erode(_erode(d, g), g)
+    e |= m & ~e               # monotone: closing adds pixels, never removes ink
+    e[:g, :] = False          # keep the capture-border dead zone
+    e[-g:, :] = False
+    e[:, :g] = False
+    e[:, -g:] = False
+    return e
 
 
 def _meanshift(xs, ys, sx, sy, sigma=25.0, iters=8):
