@@ -105,6 +105,20 @@ DEFAULT_CONFIG = {
     # "dxcam" / "mss" = force one library (mss always remains as fallback).
     "capture_backend": "auto",
 
+    # Click DELIVERY backend (v8.50). Opt-in secondary option:
+    # "win32" (default) injects through SendInput - no driver, works
+    # out of the box, and our own hooks recognise the events as
+    # injected so assistance never feeds itself.
+    # "interception" delivers clicks at the DRIVER level through the
+    # Interception library (github.com/oblitum/Interception) for the
+    # minority of games and Raw-Input apps that ignore synthetic
+    # events. It needs interception.dll beside the app AND the signed
+    # kernel driver installed (interception.exe install, then reboot).
+    # If either is missing the app says so once and keeps working
+    # through the standard Windows method - a half-installed setup can
+    # never eat a click. Applies on restart.
+    "input_backend": "win32",
+
     # Detected pieces whose bounding boxes are within this many pixels of
     # each other are merged into a single item. This rescues broken
     # outlines, icon + label pairs, and fragments that are individually
@@ -165,6 +179,25 @@ DEFAULT_CONFIG = {
     # all - stationary items behave exactly as before.
     "motion_predict": False,
     "motion_lead_ms": 50,
+
+    # Watch the screen centre only: when true, every scan is anchored
+    # at the middle of the virtual screen instead of under the cursor -
+    # for fixed-position layouts (kiosks, TV guides, one app filling the
+    # window) where the items never move. The search radius stays as set
+    # on Advanced; a click far outside that area simply passes through
+    # unassisted, like any empty space. Off = the classic cursor-anchored
+    # behaviour, bit-for-bit.
+    "watch_center_only": False,
+
+    # "Keep the cursor on it" (centre-watch follow). Only ever acts while
+    # watch_center_only is ON: after an item inside the watched square
+    # was picked (a click that snapped to it, or resting the cursor on
+    # it for ~0.3 s), the cursor stays parked on that item and chases it
+    # while it moves - scroll planes, animated panels, moving targets.
+    # It never fights the user: any held button or active follow-lock
+    # pauses it, and it dies ~1 s after the item stops being sighted.
+    # Combine with "Lead moving items" for smooth fast chasing.
+    "center_follow": False,
 
     # 3D snap follower: track position AND scale with a Kalman filter
     # instead of the legacy linear fit. Outliers are rejected per scan
@@ -689,6 +722,7 @@ class Config:
         _CHOICES = {
             "accent_matcher": ("hsv", "oklab"),
             "capture_backend": ("auto", "dxcam", "mss", "wgc"),
+            "input_backend": ("win32", "interception"),
         }
         for key, allowed in _CHOICES.items():
             raw = self.values.get(key, DEFAULT_CONFIG[key])

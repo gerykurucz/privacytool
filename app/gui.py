@@ -495,6 +495,29 @@ META = {
                        "or items in the same place win ties for a "
                        "while - handy for scrollbars and repeated "
                        "clicks on one control.", "bool", None),
+    "watch_center_only": ("Watch the screen centre only",
+                          "For fixed layouts where the items never "
+                          "move: assistance ignores where your cursor "
+                          "is and always looks inside a square at the "
+                          "middle of the screen - as wide as your "
+                          "\"search distance\" setting (150 px by "
+                          "default). Clicks outside that square pass "
+                          "through completely untouched, like empty "
+                          "space. Off (default): the usual cursor-"
+                          "anchored search.",
+                          "bool", None),
+    "center_follow": ("Keep the cursor on it",
+                      "Works only while \"Watch the screen centre \"\n"
+                      "only\" is on. After you pick an item inside the\n"
+                      "watched square - by a click, or by resting the\n"
+                      "cursor on it for a moment - the cursor stays\n"
+                      "parked on it and follows it around, even when\n"
+                      "the item moves (a scrolling plane, an animated\n"
+                      "panel). It never fights you: holding any button\n"
+                      "pauses it, and it lets go about a second after\n"
+                      "the item disappears. Turn on \"Lead moving\n"
+                      "items\" too for smooth fast chasing.",
+                      "bool", None),
     "follow_learn": ("What the memory may learn",
                      "Only items in my colour: a misclick that snapped "
                      "somewhere else cannot retarget the memory. Every "
@@ -559,6 +582,27 @@ META = {
                                  "Desktop, VMs)", "mss"),
                                 ("Windows Graphics Capture - "
                                  "experimental", "wgc"))),
+    # v8.50: click DELIVERY backend - the opt-in Interception option.
+    # The dropdown shows availability in its own label; assist.py falls
+    # back to win32 with a log line if the driver is missing, so an
+    # unavailable choice can never eat a click.
+    "input_backend": ("Click delivery method",
+                      "How your assisted clicks reach the screen. "
+                      "Standard works everywhere with nothing to "
+                      "install and is what almost everyone should "
+                      "keep. Driver level sends clicks through the "
+                      "Interception kernel driver instead, for the "
+                      "few games that ignore normal synthetic clicks "
+                      "- it needs interception.dll next to Snappy AI "
+                      "and the driver installed (run interception.exe "
+                      "install as administrator, then reboot). If "
+                      "either is missing, Snappy AI says so once and "
+                      "keeps working the standard way. Applies on "
+                      "restart.",
+                      "map", (("Standard Windows method", "win32"),
+                              ("Driver level (Interception) - for "
+                               "games that ignore synthetic clicks",
+                               "interception"))),
     # v8.49: the three detection knobs have a documented precedence that
     # was invisible here. "Auto-adjust for dim screens" may only LOWER the
     # bar, and it stands aside entirely once you raise either number above
@@ -746,6 +790,8 @@ for _i in range(1, REC_PLAY_SLOTS + 1):
 # its hotkeys, theme with the header switch, the rest are deployment.)
 TAB_ASSIST = ["block_bound_keys", "hold_follow", "rapid_click_snap",
               "follow_enabled", "motion_predict", "motion_3d",
+              "watch_center_only",
+              "center_follow",
               "accent_only",
               "adaptive_threshold", "luminance_norm",
               "color_adapt", "accent_variants", "accent_coherent",
@@ -1087,8 +1133,10 @@ PROSE = {
                    "login automatically.",
     "gate.btn.monthly": "Monthly Subscription for 9.99\u20ac",
     "gate.btn.trial": "Trial Purchase for 1.99\u20ac",
-    "gate.btn.recheck": "Re-check now",
-    "gate.btn.activate": "I paid - activate now",
+    # gate.btn.recheck / gate.btn.activate (the manual "Re-check now"
+    # and "I paid - activate now" buttons) are gone: the gate re-checks
+    # by itself every 30 seconds, so no key is registered for them in
+    # any locale.
     "gate.note": "The engine starts as soon as the subscription is "
                  "active - this window re-checks by itself every 30 "
                  "seconds. Closing it returns to sign-in.",
@@ -1122,20 +1170,16 @@ PROSE = {
         "Pay with THIS Discord e-mail - a purchase on any other address "
         "cannot activate it.",
     "gate.msg.checking": "Checking with the server...",
-    "gate.msg.open_ok": "Stripe is open in your browser - pay there, "
-                        "then press Re-check (or 'I paid - activate "
-                        "now').",
+    "gate.msg.open_ok": "Stripe is open in your browser - pay there. "
+                        "This window notices the payment by itself and "
+                        "starts the engine.",
     "gate.msg.open_fail": "Could not open a browser. Open this link by "
                           "hand:\n%s",
     "gate.msg.no_link": "That payment link is not configured on this "
                         "build.",
-    "gate.msg.dispatching": "Asking the publisher to run now...",
-    "gate.msg.no_dispatch": "Dispatch not configured - activation "
-                            "follows the publisher cron (a few "
-                            "minutes). This window keeps re-checking "
-                            "by itself.",
-    "gate.msg.not_live": "Not live yet - this window keeps re-checking "
-                         "by itself every 30 seconds.",
+    # gate.msg.dispatching / gate.msg.no_dispatch / gate.msg.not_live
+    # belonged to the removed "I paid - activate now" flow; the 30 s
+    # auto re-check covers activation, so no locale registers them.
     "gate.msg.unreachable": "Auth server unreachable: %s",
     "gate.msg.session_gone": "Session gone - sign in again.",
     "gate.msg.active": "Subscription active - starting Snappy AI...",
@@ -2960,6 +3004,40 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 return True
 
             R(_revals)
+
+            if key == "input_backend":
+                # v8.50: tell the truth about the driver option up
+                # front. Interception needs a DLL AND a kernel driver;
+                # when either is missing the choice still works (the
+                # engine falls back to the standard method with one
+                # log line), but the user must see that it is NOT
+                # active before picking it. The probe runs in a worker
+                # thread because creating an Interception context can
+                # block briefly while the driver loads.
+                note = tk.Label(cell, text="", font=F_DESC,
+                                bg=pal["card"], fg=pal["muted"],
+                                anchor="e", justify="right")
+                kit.reg(note, "card_muted")
+                note.grid(row=1, column=0, columnspan=2, sticky="e")
+
+                def _avail_probe(txt=note):
+                    try:
+                        from input_backend import InterceptionBackend
+                        ok = InterceptionBackend.available()
+                    except Exception:
+                        ok = False
+                    def _paint(ok=ok, txt=txt):
+                        if not _live(txt):
+                            return False
+                        txt.configure(text=(
+                            "Interception detected - ready to use."
+                            if ok else
+                            "Not installed here: picking this keeps "
+                            "the standard Windows method."))
+                        return True
+                    R(_paint)
+
+                threading.Thread(target=_avail_probe, daemon=True).start()
         elif kind == "colors":
             # v8.43: a colour-list row is SEEN, not read - the value
             # side is a strip of colour boxes (same look as the preset
@@ -4421,7 +4499,10 @@ def _gate_window(cfg, kit, identity, ent):
     payment buttons ("Monthly
     Subscription for 9.99 EUR" and "Trial Purchase for 1.99 EUR" -
     each checkout binds to the PAID e-mail, which must be this
-    Discord e-mail) and a re-check button. Returns True once the
+    Discord e-mail). No manual re-check or activation buttons: the
+    window re-checks the subscription by itself every 30 seconds
+    (auto_loop), so a fresh purchase starts the engine without any
+    click. Returns True once the
     worker reports an active entitlement; False when the window was
     closed. The engine is never started while this window exists.
     v8.47 dropped the blurred-logo backdrop: its red blotches showed
@@ -4574,45 +4655,16 @@ def _gate_window(cfg, kit, identity, ent):
         else:
             set_msg(i18n.L("gate.msg.open_fail", url))
 
-    def activate_now():
-        """'I paid - activate now': dispatch the publisher through
-        repository_dispatch and re-check with a short backoff, so a
-        fresh purchase activates in seconds instead of at the next
-        cron tick."""
-        set_msg(i18n.L("gate.msg.dispatching"))
-
-        def worker():
-            sent = online.dispatch_publish(cfg)
-            if not sent:
-                root.after(0, lambda: set_msg(
-                    i18n.L("gate.msg.no_dispatch")))
-                return
-            for delay in (5, 10, 20, 40):
-                time.sleep(delay)
-                try:
-                    # the user is actively waiting on a just-dispatched
-                    # publish: bypass the CDN bucket every time
-                    ident, ent_now = online.me(cfg, fresh=True)
-                except online.OnlineError:
-                    continue
-                if ident and online.entitlement_active(ent_now) \
-                        and not ent_now.get("shared"):
-                    root.after(0, lambda: checked(ident, ent_now, None))
-                    return
-            root.after(0, lambda: set_msg(
-                i18n.L("gate.msg.not_live")))
-        threading.Thread(target=worker, daemon=True,
-                         name="activate-now").start()
-
-    def do_recheck(_event=None, silent=False):
-        if not silent:
-            set_msg(i18n.L("gate.msg.checking"))
-
+    def do_recheck(_event=None, silent=True):
+        """Silent entitlement re-check. The gate has no buttons any
+        more - auto_loop drives this every 30 seconds, so a finished
+        payment starts the engine without a click (_event may still be
+        a Tk event object)."""
         def worker():
             try:
-                # an explicit click bypasses the CDN bucket; the silent
-                # 30 s auto re-check shares it with everyone else
-                ident, ent_now = online.me(cfg, fresh=not silent)
+                # the silent 30 s auto re-check shares the CDN bucket
+                # with everyone else
+                ident, ent_now = online.me(cfg, fresh=False)
                 err = None
             except online.OnlineError as exc:
                 ident, ent_now, err = None, None, str(exc)
@@ -4632,8 +4684,8 @@ def _gate_window(cfg, kit, identity, ent):
         ent_cur[0] = ent_now
         h1.configure(text=head_for(ent_now))
         sum_lbl.configure(text=online.entitlement_summary(ent_now))
-        # `shared` is part of the gate, exactly as it is in run_gui,
-        # activate_now() and both console paths. Testing only
+        # `shared` is part of the gate, exactly as it is in run_gui
+        # and both console paths. Testing only
         # entitlement_active() here let an ACTIVE-BUT-SHARED account
         # through on the 30 s auto re-check - the window said
         # "Subscription active - starting Snappy AI..." while its own
@@ -4663,8 +4715,6 @@ def _gate_window(cfg, kit, identity, ent):
         note.configure(text=i18n.L("gate.note"))
         kit.set_text(sub_btn, i18n.L("gate.btn.monthly"))
         kit.set_text(tri_btn, i18n.L("gate.btn.trial"))
-        kit.set_text(chk_btn, i18n.L("gate.btn.recheck"))
-        kit.set_text(act_btn, i18n.L("gate.btn.activate"))
         kit.set_text(_g_lang, i18n.L(
             "btn.language", i18n.native_name(i18n.current())))
         refit()          # v8.47: new text, new card size, new frame
@@ -4684,25 +4734,18 @@ def _gate_window(cfg, kit, identity, ent):
                          kind="green", big=True)
     tri_btn.pack(pady=(0, 6))
     pay_btns.append(tri_btn)
-    # v8.49: created from the catalog, not from a literal. _gate_retext()
-    # already re-worded this button from gate.btn.recheck, so a German user
-    # saw "Re-check now" on the subscription gate until they happened to
-    # switch language - an English button in the highest-stakes window in
-    # the product.
-    chk_btn = kit.button(box, i18n.L("gate.btn.recheck"), do_recheck,
-                         kind="amber", big=True)
-    chk_btn.pack(pady=(0, 6))
-    act_btn = kit.button(box, i18n.L("gate.btn.activate"), activate_now)
-    act_btn.pack(pady=(0, 6))
+    # The manual "Re-check now" and "I paid - activate now" buttons
+    # are gone: auto_loop below re-checks the entitlement silently
+    # every 30 seconds, so a finished payment starts the engine
+    # without any click.
 
     _g_lang = kit.button(box, i18n.L(
         "btn.language", i18n.native_name(i18n.current())),
         lambda: _language_window(cfg, kit, root))
     _g_lang.pack(pady=(0, 6))
     root.update_idletasks()
-    bw = max([b.winfo_width() for b in pay_btns] +
-             [chk_btn.winfo_width(), 300])
-    for b in pay_btns + [chk_btn]:
+    bw = max([b.winfo_width() for b in pay_btns] + [300])
+    for b in pay_btns:
         meta = getattr(b, "_rmeta", None)
         if meta and HAVE_PIL and bw > 10:
             text, big, surface, _w, h, role = meta
