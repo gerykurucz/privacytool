@@ -170,6 +170,67 @@ def _dilate8(m):
     return o
 
 
+def _close_gaps(m, gap):
+    """
+    Morphological closing with a square (2*gap+1) structuring element,
+    implemented as separable sliding max (dilate) then sliding min
+    (erode). Joins ink pieces separated by a break of at most `gap` px
+    into one connected blob - the anti-aliased gaps that make an
+    outlined button or sub-pixel rendered icon fragment into several
+    detected items.
+
+    Separable means it bridges axis-aligned breaks (the common case for
+    outlines and text) without filling diagonal staircases: two blobs
+    touching only at corners are not welded into a solid block, so
+    neighbouring controls stay separate targets.
+
+    Safety properties, load-bearing for the scan pipeline:
+      * monotone - original ink is re-OR'd at the end, so closing can
+        only ADD pixels, never remove them. A weak hysteresis seed that
+        survived the pre-close cleanup cannot be thinned back below its
+        ratio floor (a naive dilate+erode could, which would change
+        detection results unpredictably);
+      * border dead zone preserved - the outermost rows/columns stay
+        cleared like scan_region's own 2 px zeroing, so no 1 px garbage
+        ring returns at capture borders;
+      * O(gap^2) vectorised array ops, no per-pixel Python loops.
+    """
+    if gap <= 0:
+        return m
+    g = int(gap)
+    d = m.copy()
+    # Sliding OR over the cross arms = dilation by the square SE
+    # (the Minkowski sum of the horizontal and vertical lines).
+    for k in range(1, g + 1):
+        d[k:, :] |= m[:-k, :]
+        d[:-k, :] |= m[k:, :]
+        d[:, k:] |= m[:, :-k]
+        d[:, :-k] |= m[:, k:]
+    out = np.ones_like(m)
+    # Sliding AND over every cross offset up to reach g = erosion by the
+    # square SE (separable: vertical bar pass, then horizontal line pass).
+    for k in range(-g, g + 1):
+        if k < 0:
+            v = d[:d.shape[0] + k, :] & d[-k:, :]
+            out &= np.pad(v, ((-k, k), (0, 0)), constant_values=False)
+            h = d[:, :d.shape[1] + k] & d[:, -k:]
+            out &= np.pad(h, ((0, 0), (-k, k)), constant_values=False)
+        elif k == 0:
+            continue
+        else:
+            v = d[k:, :] & d[:-k, :]
+            out &= np.pad(v, ((k, -k), (0, 0)), constant_values=False)
+            h = d[:, k:] & d[:, :-k]
+            out &= np.pad(h, ((0, 0), (k, -k)), constant_values=False)
+    out &= d                    # subset of the dilation by construction
+    out |= m & ~out             # ...but never removes original ink
+    out[:g, :] = False          # keep the capture-border dead zone
+    out[-g:, :] = False
+    out[:, :g] = False
+    out[:, -g:] = False
+    return out
+
+
 def _meanshift(xs, ys, sx, sy, sigma=25.0, iters=8):
     """
     Walk from (sx, sy) toward the centre of mass of nearby object pixels.
@@ -482,7 +543,7 @@ class FollowMemory(object):
 
 
 def _merge_nearby(candidates, fragments, merge_distance,
-                  min_area, max_area, max_dim, max_aspect):
+                  min_area, max_area, max_dim, max_aspect, scale=1.0):
     """
     Group detected boxes that sit close together.
 
@@ -501,6 +562,9 @@ def _merge_nearby(candidates, fragments, merge_distance,
     candidates / fragments entries:
         (score, Y0, X0, cl_px, dist, area, contrast, bw, bh)
     """
+    # merge_distance is a virtual-px user setting; detected boxes are in
+    # physical px of the captured region - compare like for like.
+    merge_distance = merge_distance * scale
     pool = list(candidates) + list(fragments)
     n_full = len(candidates)
     n = len(pool)
@@ -2034,6 +2098,34 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
     ink = _erode(_dilate(ink, 1), 1)
     ink_w = _erode(_dilate(ink_w, 1), 1)
 
+    # Morphological closing before grouping (v8.64). Anti-aliased and
+    # sub-pixel rendered outlines break into several thin pieces; without
+    # this they fragment into multiple detected items (or fall under
+    # min_area and vanish entirely). Closing bridges row/column gaps up
+    # to `gap` px with a cross structuring element - diagonal neighbours
+    # are never joined, so corner-touching controls stay separate. The
+    # operation is monotone (adds pixels only), so weak hysteresis seeds
+    # cannot be thinned below their ratio floor by an erosion step.
+    # Reach follows "Glue nearby pieces together" (merge_distance, in
+    # virtual px, DPI-scaled like every other distance) at half strength:
+    # closing handles hairline breaks, box-level merging stays with
+    # _merge_nearby. gap == 0 (setting off) reproduces the old pipeline
+    # exactly.
+    merge_distance = float(cfgv.get("merge_distance", 0) or 0)
+    scale = 1.0
+    if merge_distance > 0:
+        try:
+            from win32rt import get_dpi_scale as _get_dpi_scale
+            scale = _get_dpi_scale()
+        except Exception:
+            scale = 1.0
+        # The capture is in PHYSICAL pixels; merge_distance is a virtual
+        # (DPI-independent) user setting, so the pixel reach scales with
+        # the display factor.
+        gap = int(min(3, max(1, round(0.5 * merge_distance * scale))))
+        ink = _close_gaps(ink, gap)
+        ink_w = _close_gaps(ink_w, gap)
+
     # Coarse cell grid.
     ph = (CS - h % CS) % CS
     pw = (CS - w % CS) % CS
@@ -2242,12 +2334,12 @@ def scan_region(img, cx, cy, cfgv, radius, follow_ctx=None, edge_flags=None,
 
     # Merge pieces of one visual item (broken outlines, icon + label
     # pairs, fragments too small on their own) so the snap lands on the
-    # whole item instead of one shard of it.
-    merge_distance = float(cfgv.get("merge_distance", 0) or 0)
+    # whole item instead of one shard of it. (merge_distance was read and
+    # DPI-scaled for pixel closing above; reused unchanged here.)
     if merge_distance > 0 and (fragments or len(candidates) > 1):
         candidates = _merge_nearby(
             candidates, fragments, merge_distance,
-            min_area, max_area, max_dim, max_aspect,
+            min_area, max_area, max_dim, max_aspect, scale,
         )
 
     # Accent colour priority / exclusivity (opt-in). The boost only
