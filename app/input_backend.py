@@ -162,25 +162,31 @@ class InterceptionBackend(object):
     def _has_exports(dll):
         # getattr on a ctypes WinDLL raises AttributeError for missing
         # exports, so hasattr answers per name without touching the
-        # driver. Works on any ABI level.
-        return all(hasattr(dll, n) for n in
-                   InterceptionBackend._REQUIRED_EXPORTS)
+        # driver. Plain-name hits win; otherwise fall back to reading
+        # the PE export table once (decorated MSVC builds).
+        plain = getattr(dll, "_plain_exports", None)
+        if plain is not None:
+            return all(n in plain for n in
+                       InterceptionBackend._REQUIRED_EXPORTS)
+        if all(hasattr(dll, n) for n in
+               InterceptionBackend._REQUIRED_EXPORTS):
+            return True
+        return InterceptionBackend._abi1_names(dll)
 
     @staticmethod
     def _abi1_names(dll):
         # v8.52: the official v1.0.1 interception.dll is built with MSVC
-        # __declspec(dllexport), which DECORATES its exports:
-        #   ?interception_create_context@@YAPAXXZ and friends.
-        # ctypes' GetProcAddress only ever asks for the plain C name, so
-        # hasattr() says "not found" for EVERY function of a perfectly
-        # good official DLL - that was the real reason users with the
-        # correct library/interception.dll next to the exe still saw
-        # "does not export the Interception functions". Scan the actual
-        # export table once and build decorated-name aliases so plain
-        # getattr lookups succeed. (ABI-10 rebuilds export undecorated
-        # names; those keep working untouched.)
+        # __declspec(dllexport) WITHOUT extern "C", so its exports are
+        # DECORATED C++ names (?interception_send@@YA... or plain
+        # interception_send@4 depending on build). ctypes' GetProcAddress
+        # only ever asks for the undecorated name and finds NOTHING on a
+        # perfectly good official DLL - that was the real reason users
+        # holding the correct library/interception.dll still saw "does
+        # not export the Interception functions". Read the PE export
+        # table directly, map every interception_* name (decorated or
+        # not) to its absolute function address, and remember them;
+        # _install_plain_lookup then binds the plain names ctypes wants.
         try:
-            import re
             base = getattr(dll, "_handle", None)
             if not base:
                 return False
@@ -215,75 +221,116 @@ class InterceptionBackend(object):
             names_addr = data + ed.AddressOfNames
             ord_addr = data + ed.AddressOfNameOrdinals
             func_addr = data + ed.AddressOfFunctions
-            pat = re.compile(rb"^(\?)(interception_\w+)(@@.*)$")
+            # Absolute span of this image's own function-pointer table;
+            # a forwarded export's RVA addresses a name string instead,
+            # which falls OUTSIDE this span. Also used by
+            # _install_plain_lookup to reject pointers that do not live
+            # inside this DLL before they are ever called.
+            func_lo = ed.AddressOfFunctions
+            func_hi = func_lo + 4 * ed.NumberOfFunctions
             found = {}
             for i in range(ed.NumberOfNames):
                 na = ctypes.cast(names_addr + 4 * i,
                                  ctypes.POINTER(ctypes.c_uint32)).contents.value
-                raw = ctypes.string_at(data + na, 128).split(b"\x00")[0]
-                if not raw.startswith(b"interception_"):
-                    continue
-                short = raw.decode("ascii")
-                if short in found:
+                raw = ctypes.string_at(data + na, 192).split(b"\x00")[0]
+                short = InterceptionBackend._demangle(raw)
+                if short is None:
                     continue
                 idx = ctypes.cast(ord_addr + 2 * i,
                                   ctypes.POINTER(ctypes.c_uint16)).contents.value
-                addr = data + ctypes.cast(func_addr + 4 * idx,
-                                          ctypes.POINTER(ctypes.c_uint32)).contents.value
-                found[short] = addr
-            if not found:
-                # No plain names - try MSVC-decorated C++ exports.
-                for i in range(ed.NumberOfNames):
-                    na = ctypes.cast(names_addr + 4 * i,
-                                     ctypes.POINTER(ctypes.c_uint32)).contents.value
-                    raw = ctypes.string_at(data + na, 192).split(b"\x00")[0]
-                    m = pat.match(raw)
-                    if not m:
-                        continue
-                    short = m.group(2).decode("ascii")
-                    if short in found:
-                        continue
-                    idx = ctypes.cast(ord_addr + 2 * i,
-                                      ctypes.POINTER(ctypes.c_uint16)).contents.value
-                    addr = data + ctypes.cast(func_addr + 4 * idx,
-                                              ctypes.POINTER(ctypes.c_uint32)).contents.value
-                    found[short] = addr
-            if not found:
+                rva = ctypes.cast(func_addr + 4 * idx,
+                                  ctypes.POINTER(ctypes.c_uint32)).contents.value
+                if rva == 0:
+                    continue
+                # Forwarded export? Then its RVA addresses a name
+                # string instead of code - bind through the target DLL.
+                is_forward = not (func_lo <= rva < func_hi)
+                if is_forward:
+                    fwd = ctypes.string_at(base + rva, 128)
+                    dll_name, _, fwd_name = fwd.partition(b".")
+                    try:
+                        other = ctypes.WinDLL(dll_name.decode("ascii"))
+                        p = other.GetProcAddress(fwd_name.split(b"@")[0])
+                        if p:
+                            found[short] = int(p)
+                    except Exception:
+                        pass
+                    continue
+                found.setdefault(short, base + rva)
+            if not all(n in found for n in
+                       InterceptionBackend._REQUIRED_EXPORTS):
                 return False
-            c_pvoid = ctypes.c_void_p
-            for short, addr in found.items():
-                try:
-                    getattr(dll, short)
-                    continue          # plain GetProcAddress already works
-                except AttributeError:
-                    pass
-                setattr(dll, short, ctypes.CFUNCTYPE(c_pvoid)(addr))
-            # v8.52b: the aliases above are plain-name fallbacks for
-            # MSVC-decorated exports; declare argtypes/restypes NOW so a
-            # later restype assignment in _build_signatures does NOT
-            # replace the alias and undo GetProcAddress success.
-            dll.interception_create_context.restype = ctypes.c_void_p
-            dll.interception_destroy_context.argtypes = [ctypes.c_void_p]
-            dll.interception_wait_with_timeout.restype = ctypes.c_int
-            dll.interception_wait_with_timeout.argtypes = \
-                [ctypes.c_void_p, ctypes.c_double]
-            dll.interception_send.restype = ctypes.c_int
-            dll.interception_send.argtypes = \
-                [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
-                 ctypes.c_int]
-            if hasattr(dll, "interception_is_mouse"):
-                dll.interception_is_mouse.restype = ctypes.c_int
-                dll.interception_is_mouse.argtypes = [ctypes.c_int]
-            if hasattr(dll, "interception_first_device"):
-                dll.interception_first_device.restype = ctypes.c_int
-                dll.interception_first_device.argtypes = [ctypes.c_int]
-            if hasattr(dll, "interception_next_handle"):
-                dll.interception_next_handle.restype = ctypes.c_int
-                dll.interception_next_handle.argtypes = \
-                    [ctypes.c_void_p, ctypes.c_int]
-            return InterceptionBackend._has_exports(dll)
+            dll._plain_exports = found       # plain name -> abs address
+            dll._plain_image_base = base     # module load address
+            # Absolute span of this image's own export-address range (the
+            # RVA table is relative to `base`). Used by
+            # _install_plain_lookup to reject any pointer that does not
+            # actually live inside this DLL before it is ever called.
+            dll._plain_code_lo = base + func_lo
+            dll._plain_code_hi = base + func_hi
+            return True
         except Exception:
             return False
+
+    @staticmethod
+    def _demangle(raw):
+        # b"interception_send" -> itself; b"?interception_send@@YA..." or
+        # b"interception_send@4" -> b"interception_send". Returns the
+        # plain name only when it starts with interception_.
+        try:
+            s = raw.decode("ascii", "ignore")
+        except Exception:
+            return None
+        if s.startswith("?"):
+            s = s[1:]
+            s = s.split("@@")[0]
+        elif "@" in s:
+            head, tail = s.split("@", 1)
+            if tail.isdigit():
+                s = head
+        if s.startswith("interception_"):
+            return s
+        return None
+
+    @staticmethod
+    def _install_plain_lookup(dll):
+        # v8.52: bind plain names that ctypes' own GetProcAddress could
+        # not find because the build exports them MSVC-decorated only.
+        # The scan (_abi1_names) knows the exact function addresses; we
+        # re-resolve through THIS module handle's GetProcAddress and cast
+        # to a real ctypes function pointer, then setattr it on the DLL
+        # object. ctypes WinDLL returns instance attributes before the
+        # dynamic lookup, so everything downstream (.argtypes/.restype
+        # assignment, byref(), Structure pointers) behaves exactly like a
+        # normally-loaded DLL. Undecorated (ABI-10) builds skip per name.
+        plain = getattr(dll, "_plain_exports", None)
+        if not plain:
+            return
+        try:
+            base = getattr(dll, "_plain_image_base", 0) or 0
+            clo = getattr(dll, "_plain_code_lo", 0) or 0
+            chi = getattr(dll, "_plain_code_hi", 0) or 0
+            k32 = ctypes.windll.kernel32
+            k32.GetProcAddress.restype = ctypes.c_void_p
+            k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            for short, va in plain.items():
+                if hasattr(dll, short):
+                    continue      # plain GetProcAddress already works
+                # Preferred path: resolve through THIS module handle so
+                # ctypes fully owns the pointer (and validates it). Only
+                # if that fails do we fall back to the scanned VA, and we
+                # accept it only when it lies inside this image's bounds.
+                addr = k32.GetProcAddress(base, short.encode("ascii"))
+                if not addr:
+                    if not (clo <= va < chi):
+                        continue          # unvalidated - refuse to bind
+                    addr = va
+                if not addr:
+                    continue
+                f = ctypes.cast(addr, ctypes.CFUNCTYPE(ctypes.c_void_p))
+                setattr(dll, short, f)
+        except Exception:
+            pass
 
     @classmethod
     def _load_dll(cls):
@@ -312,6 +359,7 @@ class InterceptionBackend(object):
             # directly and installs plain-name aliases. Only after that
             # probe do we judge whether this is the real library.
             if cls._has_exports(dll) or cls._abi1_names(dll):
+                cls._install_plain_lookup(dll)
                 cls._loaded_path = p if d else "(PATH search)"
                 return dll
         cls._loaded_path = loaded_path
@@ -445,22 +493,30 @@ class InterceptionBackend(object):
                     pass
                 return dev
         if hasattr(self._dll, "interception_next_handle") and \
+                hasattr(self._dll, "interception_first_device") and \
                 hasattr(self._dll, "interception_is_mouse"):
-            # ABI-10 iteration idiom.
-            for kind in (15, 14):
-                dev = self._dll.interception_next_handle(
-                    self._context, self._dll.interception_first_device(kind))
-                while 0 < dev <= self._INTERCEPTION_MAX_DEVICES:
-                    if self._dll.interception_is_mouse(dev):
-                        try:
-                            self._dll.interception_set_filter(
-                                self._context, dev, self._FILTER_ALL)
-                        except Exception:
-                            pass
-                        return dev
+            # ABI-10 iteration idiom. Wrapped defensively: on any build
+            # where these helpers misbehave we still land on the legacy
+            # fixed-range walk below instead of degrading to Win32.
+            try:
+                for kind in (15, 14):
                     dev = self._dll.interception_next_handle(
-                        self._context, dev)
-        elif hasattr(self._dll, "interception_is_keyboard"):
+                        self._context,
+                        self._dll.interception_first_device(kind))
+                    while 0 < dev <= self._INTERCEPTION_MAX_DEVICES:
+                        if self._dll.interception_is_mouse(dev):
+                            try:
+                                self._dll.interception_set_filter(
+                                    self._context, dev, self._FILTER_ALL)
+                            except Exception:
+                                pass
+                            return dev
+                        dev = self._dll.interception_next_handle(
+                            self._context, dev)
+            except Exception:
+                pass
+        if hasattr(self._dll, "interception_is_mouse") and \
+                not hasattr(self._dll, "interception_next_handle"):
             # v8.52: official v1.0.1 ABI-1 has no next_handle/first_device.
             # Its documented idiom is simply walking the fixed handles
             # 1..10 and asking is_keyboard()/is_mouse() per handle.
