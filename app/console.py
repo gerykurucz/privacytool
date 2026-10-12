@@ -1,6 +1,3 @@
-"""Classic console interface:  python main.py --console
-Commands: s=status t=toggle h=help q=quit a=accent f=follow c=autoclick
-          v=calibrate colour"""
 
 import queue
 import sys
@@ -19,29 +16,59 @@ from vision import (_parse_accents, accent_soft_of, accent_matcher_of,
 def print_banner(app):
     cfg = app.cfg
 
-    rad_value = cfg.get("radius")
+    try:
+        rad_value = int(cfg.get("radius"))
+    except (TypeError, ValueError):
+        rad_value = 150
+    scaled_px = app.radius_px()
     rad_label = dict(RADIUS_STEPS).get(rad_value, "custom")
+    if scaled_px != rad_value:
+        rad_label = "%s (scaled %d px)" % (rad_label, scaled_px)
 
     print("")
     print("=" * 70)
     print("   S N A P P Y   A I  -  accessibility click helper")
     print("=" * 70)
-    print("   MODE        : %s" % ("1 classic" if cfg.get("mode") == 1 else "2 guide"))
+    print("   MODE        : %s" % ("1 classic" if int(str(cfg.get("mode", "2"))).strip() in ("1", "2") and int(cfg.get("mode", "2")) == 1 else "2 guide"))
     print("   Radius      : %s (%d px)" % (rad_label, app.radius_px()))
     print("   Capture     : %s" % cfg.get("capture_backend", "auto"))
-    print("   Merge       : %d px" % int(cfg.get("merge_distance", 0) or 0))
+    try:
+        _merge = int(cfg.get("merge_distance", 0) or 0)
+    except (TypeError, ValueError):
+        _merge = 0
+    print("   Merge       : %d px" % _merge)
     print("   Accent      : %s%s" % (
         cfg.get("accent_color") or "off",
         "  [ONLY - other items ignored]"
         if cfg.get("accent_only") else ""))
-    glide = int(cfg.get("glide_ms", 0) or 0)
+    try:
+        glide = int(cfg.get("glide_ms", 0) or 0)
+    except (TypeError, ValueError):
+        glide = 0
     print("   Glide       : %s" % ("%d ms" % glide if glide > 0
                                    else "off (instant)"))
+    try:
+        _fb = float(cfg.get("follow_boost", 1.0))
+    except (TypeError, ValueError):
+        _fb = 1.0
+    try:
+        _fs = int(cfg.get("follow_seconds", 20))
+    except (TypeError, ValueError):
+        _fs = 20
     print("   Follow      : %s" % (
         "ON (%.1fx boost, %ds memory)"
-        % (float(cfg.get("follow_boost", 1.0)),
-           int(cfg.get("follow_seconds", 20)))
+        % (_fb, _fs)
         if cfg.get("follow_enabled") else "OFF"))
+    if cfg.get("controller_input"):
+        _binds = [str(cfg.get(k) or "") for k in
+                  ("pad_launch", "pad_pause", "pad_record", "pad_play")]
+        print("   Controller  : ON (%s drive, output %s%s)"
+              % ("stick+trigger" if cfg.get("pad_drive", True) else "bindings",
+                 cfg.get("pad_output", "auto"),
+                 ", bound: " + "/".join(b for b in _binds if b)
+                 if any(_binds) else ""))
+    else:
+        print("   Controller  : OFF (Assistance tab: Enable controller input)")
     print("")
     print("   STATE       : %s" % ("LAUNCHED" if app.running else "PAUSED"))
     print("")
@@ -56,7 +83,7 @@ def print_banner(app):
     print("")
     print("   SHIFT + click : no assist for that click.")
     print("")
-    print("   Always-available keys (rebindable: config.ini or GUI)")
+    print("   Always-available keys (customizable: config.ini or GUI)")
     print("     %-14s launch" % str(cfg.get("key_launch", "ctrl+l")).lower())
     print("     %-14s pause" % str(cfg.get("key_pause", "ctrl+p")).lower())
     print("     %-14s record macro (start)"
@@ -68,16 +95,12 @@ def print_banner(app):
     print("     %-14s play recording slots 1-5"
           % (str(cfg.get("key_play1", "ctrl+1")).lower() + "..."))
     print("")
-    print("   Mode keys%s" % (
-        " - single-key binds BLOCK typing system-wide!"
-        if cfg.get("block_bound_keys")
-        else " (fire everywhere, keys still type)"))
-    print("     %-14s mode 1 classic" % effective_mode_key(cfg, 1))
-    print("     %-14s mode 2 guide" % effective_mode_key(cfg, 2))
+    print("   Mode keys (fire everywhere, keys still type)")
+    print("     %-14s mode 1 classic" % effective_mode_key(cfg, 1).split()[0])
+    print("     %-14s mode 2 guide" % effective_mode_key(cfg, 2).split()[0])
     print("")
     print("   Console commands")
-    print("     s=status t=toggle h=help q=quit a=accent f=follow "
-          "c=autoclick v=calibrate")
+    print("     s=status t=toggle h=help q=quit a=accent f=follow g=gamepad c=autoclick v=calibrate p=capture")
     print("=" * 70)
     print("")
 
@@ -112,7 +135,7 @@ def print_help():
     print("-" * 70)
     print(" SNAPPYAI HELP")
     print("  - Start paused. Press Ctrl+L to launch assistance.")
-    print("  - Press Ctrl+P to pause (rebindable). While paused,")
+    print("  - Press Ctrl+P to pause (customizable). While paused,")
     print("    nothing is intercepted - macros and recorder included.")
     print("  - Ctrl+Alt+R starts the macro recorder: your keys are")
     print("    captured and still reach your apps; Ctrl+Alt+S saves")
@@ -127,12 +150,11 @@ def print_help():
     print("  - Settings reload from disk whenever you press Apply in")
     print("    the GUI (there is no reload hotkey anymore); quitting")
     print("    goes through the window's close button.")
-    print("  - All hotkeys are rebindable (key_launch, key_pause, ...) in")
-    print("    config.ini or the GUI's Hotkeys tab.")
+    print("  - All hotkeys are customizable (key_launch, key_pause, ...) in")
+    print("    config.ini or the GUI's Keyboard & Mouse tab.")
     print("  - Single-key binds (1, 2, v ...) work in every app by")
     print("    default AND never block typing: the action fires and the")
-    print("    key still reaches the focused app. block_bound_keys")
-    print("    switches them to classic swallowing hotkeys.")
+    print("    key still reaches the focused app.")
     print("  - follow_learn = accent: the follow memory only learns items")
     print("    matching accent_color, so a misclick that snapped elsewhere")
     print("    never retargets the memory away from your colour.")
@@ -145,23 +167,24 @@ def print_help():
     print("    for a few seconds, similar-looking or same-place items win")
     print("    ties - handy for scrollbars and repeated clicks on one")
     print("    control. It learns only from your own successful clicks.")
-    print("  - auto-click (console 'c') clicks your colour by itself:")
-    print("    the screen is scanned on its own and the best item in your")
-    print("    accent colour is clicked, without you clicking anything.")
-    print("    Needs accent_color set, never clicks while paused, and stops")
-    print("    at its per-session limit.")
+    print("  - auto-click (console 'c') clicks by itself:")
+    print("    the screen is scanned on its own and the best item is")
+    print("    clicked, without you clicking anything. With an accent")
+    print("    colour set only matching items qualify, otherwise the")
+    print("    highest-contrast item qualifies. Never clicks while")
+    print("    paused, and keeps clicking while a target stays visible.")
     print("  - calibrate (console 'v') measures your colour on THIS screen:")
     print("    point at the app you work in, press v, and it suggests the")
     print("    accent_soft value tuned to your display and lighting.")
     print("    Set it on the Handler tab ('Accept near-miss shades').")
     print("  - capture report (console 'p'): if assistance works in normal")
-    print("    windows but fails in a game or hardware-accelerated app, run")
+    print("    windows but fails in a hardware-accelerated app, run")
     print("    it there. BLACK/FROZEN frames mean the capture engine cannot")
     print("    SEE that window (Desktop Duplication misses overlays/DRM,")
     print("    mss misses GPU-exclusive content) even though dxcam is")
     print("    installed fine. Fix: Settings -> Screen capture engine ->")
     print("    Windows Graphics Capture (pip install windows-capture), or")
-    print("    Compatible mode; then restart. Exclusive-fullscreen games")
+    print("    Compatible mode; then restart. Exclusive-fullscreen apps")
     print("    need borderless-window mode for ANY capturer to see them.")
     print("  - Detection adapts to your screen: dim regions lower their own")
     print("    ink bar (adaptive_threshold) and edges are scored relative to")
@@ -172,28 +195,44 @@ def print_help():
     print("    app); the Stripe")
     print("    subscription bound to that login is re-checked at every")
     print("    start - no reachable server, no engine.")
-    print("  - exclude_color (Detection & Colours tab): items containing")
+    print("  - exclude_color (Detection tab): items containing")
     print("    that colour are NEVER clickable - clicks on them pass")
     print("    straight through, in both modes. Exclusion outranks")
     print("    accent boosts.")
-    print("  - motion_predict + motion_lead_ms (Detection & Colours):")
-    print("    aim ahead of MOVING items (scrolling lists, video seek")
+    print("  - motion_predict + motion_lead_ms (Detection tab):")
+    print("    track ahead of MOVING items (scrolling lists, video seek")
     print("    bars) by a measured speed+direction lead; standing")
     print("    items behave exactly as before.")
     print("  - motion_3d (Assistance tab): the same lead through a")
     print("    position-plus-size tracker - bad scans are ignored, turns")
     print("    are followed through, and a sudden size jump restarts the")
     print("    track. Same gates and cap; only the brains change.")
-    print("  - Macros tab: five triggers that send a whole key combo")
+    print("  - Macros tab: five macro keys that send a whole key combo")
     print("    instead of typing ('B means Ctrl+C'). One press = one")
-    print("    combo press, and the trigger is always swallowed while")
+    print("    combo press, and the macro key is always consumed while")
     print("    launched, so D = Ctrl+D never leaks a bare D.")
     print("    Recorder: Ctrl+Alt+R capture, Ctrl+Alt+S stop and save,")
     print("    Ctrl+Alt+M play, Ctrl+1..5 play by list position. Each")
     print("    recording is named and carries its own playback style:")
     print("    play once, or repeat until stopped.")
+    print("  - Controller (Assistance tab: 'Enable controller input'):")
+    print("    Windows' own XInput, so a pad is a full second input device.")
+    print("    Left stick steers the cursor, right trigger is the press that")
+    print("    assistance snaps from, left trigger is a right click, and the")
+    print("    right stick steers the view while that press is held - so the")
+    print("    snap, guide, follow and auto-click behaviour is the SAME code")
+    print("    a mouse user gets. Start launches, Back pauses; every action")
+    print("    can be re-bound on the Controller tab, including to a")
+    print("    combination ('rb+a'), which always wins over the shorter")
+    print("    binding it contains. Recordings capture controller buttons and")
+    print("    sticks into the independent Controller Recordings list; keyboard")
+    print("    input goes into the Recordings list; controller")
+    print("    macros sit on the Macros tab. Replaying controller output as a")
+    print("    REAL virtual gamepad needs the optional ViGEmBus driver -")
+    print("    without it, output falls back to keyboard and mouse.")
+    print("    Console 'g' prints what is connected and what is bound.")
     print("  - capture_backend, merge_distance, accent_color and friends can")
-    print("    be tuned in config.ini / config.json; see the shipped example.")
+    print("    be tuned in config.ini / config.json; see %s." % app.cfg.path)
     print("  - Settings are stored in config.json and optional config.ini.")
     print("-" * 70)
 
@@ -208,7 +247,6 @@ def _retry_prompt():
 
 
 def _console_login(cfg):
-    """Discord browser round trip. Returns the identity or None."""
     while True:
         print("")
         print("   Sign in with Discord (your browser opens; the tab")
@@ -223,23 +261,25 @@ def _console_login(cfg):
         if identity:
             return identity
         print("   %s" % (msg or "No sign-in came back - try again."))
+        if not _retry_prompt():
+            return None
+        time.sleep(1.0)
 
 
 def _console_subscribe_loop(cfg, identity):
-    """Subscription gate for the console. True = engine may start."""
     while True:
         try:
             identity, ent = online.me(cfg, fresh=True)
         except online.OnlineError as exc:
             print("   Auth server unreachable: %s" % exc)
             if not _retry_prompt():
-                return False
+                return None
             continue
         if identity is None:
-            return False            # session vanished: sign in again
+            return None
         print("   Status    : %s" % online.entitlement_summary(ent))
-        if online.entitlement_active(ent) and not ent.get("shared"):
-            return True
+        if online.entitlement_active(ent) and not (ent or {}).get("shared"):
+            return identity
         if (ent or {}).get("shared"):
             print("")
             print("   This account is in use on ANOTHER computer right")
@@ -249,18 +289,18 @@ def _console_subscribe_loop(cfg, identity):
                 ans = input("   Enter re-checks, q quits: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print("")
-                return False
+                return None
             if ans in ("q", "quit"):
-                return False
+                return None
+            online.nudge_publisher(cfg)
             continue
         state = str((ent or {}).get("status", "unsubscribed"))
         print("")
         print("   Account   : %s" % online.identity_label(identity))
         print("   Subscrip. : %s - the engine stays off." % state)
-        if state == "email_mismatch":
-            print("   The payment was made with a different e-mail")
-            print("   than your Discord account - subscribe again")
-            print("   using the Discord e-mail shown above.")
+        if state in ("unsubscribed", ""):
+            print("   Pay with THIS e-mail - a purchase made on any")
+            print("   other address cannot activate this login.")
         print("   Subscribe on Stripe (activation lands up to ~10 min")
         print("   after payment, or use 'I paid' in the GUI):")
         print("     monthly : %s"
@@ -272,24 +312,18 @@ def _console_subscribe_loop(cfg, identity):
             ans = input("   Enter re-checks, q quits: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("")
-            return False
+            return None
         if ans in ("q", "quit"):
-            return False
+            return None
+        online.nudge_publisher(cfg)
 
 
 def console_gate(cfg):
-    """
-    Online sign-in + subscription gate for the console path (v8.22).
-
-    Strict by design: the engine starts only with a live, positive
-    answer from the signed entitlements file on GitHub - no live
-    engine, not even the banner prints. Returns the identity label,
-    or None when the session must not start.
-    """
     print("")
     print("   %s - online sign-in" % APP_NAME)
     print("   (subscriptions are bound to your provider login)")
     while True:
+        ent = None
         identity = None
         sess = online.load_session()
         if sess and sess.get("provider"):
@@ -307,9 +341,11 @@ def console_gate(cfg):
             if identity is None:
                 return None
         else:
-            if online.entitlement_active(ent) and not ent.get("shared"):
+            if online.entitlement_active(ent) and not (ent or {}).get("shared"):
                 return identity
-        if not _console_subscribe_loop(cfg, identity):
+        identity = _console_subscribe_loop(cfg, identity)
+        if identity is None:
+            return None
             return None
         return identity
 
@@ -339,34 +375,44 @@ def windows_main(cfg, identity=None):
     threading.Thread(target=reader, daemon=True).start()
 
     def shared_watch():
-        """Netflix-style guard: if the signed file flags this identity
-        as running in two places at once, pause and say why.
-
-        Goes through online.row_shared(), so the confirmation window
-        applies here too: the heartbeat endpoint is an open webhook, and a
-        single sighting can be forged by anyone who knows the e-mail."""
         if not identity:
             return
         idh = online.row_hash(identity)
         legacy = online.row_hash_legacy(identity)
+        _last_shared_log = 0.0
         while not app.stop.is_set():
-            # fixed cadence (not a setting): this is sharing enforcement
-            if app.stop.wait(max(1, online.presence_interval_seconds())):
+            try:
+                interval = online.presence_interval_seconds()
+            except Exception:
+                interval = 60
+            try:
+                interval = max(1, int(interval))
+            except (TypeError, ValueError):
+                interval = 60
+            if app.stop.wait(interval):
                 return
             try:
                 rows, gen = online.fetch_entitlements(cfg)
             except online.OnlineError:
                 continue
-            # the publisher may still be keyed by the legacy hash
-            key = idh if idh in rows else legacy
-            shared = online.row_shared(rows, key, gen)
+            except Exception:
+                continue
+            try:
+                key = idh if idh in rows else legacy
+                shared = online.row_shared(rows, key, gen)
+            except Exception:
+                continue
             if shared and app.running:
                 app.toggle_running()
                 log("ACCOUNT IN USE ELSEWHERE - assistance paused. "
                     "Snappy AI runs on one machine per account; close "
                     "the other session and launch again.")
+                _last_shared_log = time.monotonic()
             elif shared:
-                log("ACCOUNT IN USE ELSEWHERE - staying paused.")
+                now_m = time.monotonic()
+                if now_m - _last_shared_log > 300:
+                    _last_shared_log = now_m
+                    log("ACCOUNT IN USE ELSEWHERE - staying paused.")
 
     threading.Thread(target=shared_watch, daemon=True,
                      name="shared-watch").start()
@@ -397,11 +443,11 @@ def windows_main(cfg, identity=None):
                 print_status(app)
 
             elif line in ("p", "capture"):
-                # v8.51: capture diagnostics. If assistance works in
-                # normal windows but fails inside a game or hardware-
-                # accelerated app, this shows whether the frames the
-                # engine sees are black/frozen (blind backend) - and
-                # which of dxcam/wgc/mss produced them.
+
+
+
+
+
                 try:
                     print(app._capture.capture_report())
                 except Exception as exc:
@@ -412,8 +458,8 @@ def windows_main(cfg, identity=None):
 
             elif line in ("a", "accent"):
                 if not _parse_accents(cfg.get("accent_color")):
-                    print("accent_color is off. Set it first (GUI Detection &")
-                    print("Colours tab, or config.ini: accent_color = blue")
+                    print("accent_color is off. Set it first (GUI Detection")
+                    print("tab, or config.ini: accent_color = blue")
                     print("then press Apply in the GUI, and 'a' will work.")
                 else:
                     new_state = not bool(cfg.get("accent_only"))
@@ -427,10 +473,16 @@ def windows_main(cfg, identity=None):
             elif line in ("f", "follow"):
                 new_state = not bool(cfg.get("follow_enabled"))
                 cfg.set("follow_enabled", new_state)
+                try:
+                    _fb = float(cfg.get("follow_boost", 1.0))
+                except (TypeError, ValueError):
+                    _fb = 1.0
+                try:
+                    _fs = int(cfg.get("follow_seconds", 20))
+                except (TypeError, ValueError):
+                    _fs = 20
                 log("FOLLOW MEMORY: %s (%.1fx boost for %ds after each snap)"
-                    % ("ON" if new_state else "OFF",
-                       float(cfg.get("follow_boost", 1.0)),
-                       int(cfg.get("follow_seconds", 20))))
+                    % ("ON" if new_state else "OFF", _fb, _fs))
 
             elif line in ("c", "autoclick"):
                 new_state = not bool(cfg.get("auto_click"))
@@ -438,19 +490,21 @@ def windows_main(cfg, identity=None):
                 if new_state:
                     app._auto_reset_session()
                 what = cfg.get("accent_color") or "high-contrast items"
-                log("AUTO-CLICK: %s (clicks %s by itself every %.3gs, "
-                    "limit %d per session)"
-                    % ("ON" if new_state else "OFF",
-                       what,
-                       float(cfg.get("auto_click_interval", 0.1)),
-                       int(cfg.get("auto_click_max_clicks", 10))))
+                log("AUTO-CLICK: %s (clicks %s by itself every 0.050s, "
+                    "keeps clicking while a target stays visible)"
+                    % ("ON" if new_state else "OFF", what))
                 if new_state and not _parse_accents(cfg.get("accent_color")):
                     print("No accent colour set: auto-click will take "
                           "the highest-CONTRAST item in the centre "
-                          "square instead. Raise 'How crisp an "
-                          "auto-click target must be' if it picks too "
-                          "eagerly, or set a colour (GUI Colors tab / "
-                          "config.ini: accent_color = blue) to aim it.")
+                          "square instead, or set a colour (GUI Colors "
+                          "tab / config.ini: accent_color = blue) to "
+                          "direct it.")
+
+            elif line in ("g", "gamepad", "controller", "pad"):
+                try:
+                    print(app.pad_status())
+                except Exception as exc:
+                    print("controller status failed: %r" % (exc,))
 
             elif line in ("v", "calibrate"):
                 accents = _parse_accents(cfg.get("accent_color"))
@@ -460,10 +514,6 @@ def windows_main(cfg, identity=None):
                           "tab), point at the app you work in, and press "
                           "v again.")
                 else:
-                    # No prompt here: stdin belongs to the command
-                    # reader thread, so this only reports - the value is
-                    # applied on the Handler tab ('Accept near-miss
-                    # shades') or in config.ini as accent_soft.
                     try:
                         from win32rt import get_cursor_pos
                         x, y = get_cursor_pos()
@@ -476,11 +526,22 @@ def windows_main(cfg, identity=None):
                         print("Calibration capture failed - nothing "
                               "grabbed around the cursor.")
                     else:
-                        rep = calibrate_accent(
-                            img, cx, cy, accents,
-                            float(cfg.get("accent_tolerance", 26)),
-                            accent_soft_of(cfg.values),
-                            accent_matcher_of(cfg.values))
+                        try:
+                            _tol = float(cfg.get("accent_tolerance", 26))
+                        except (TypeError, ValueError):
+                            _tol = 26.0
+                        try:
+                            _soft_now = int(cfg.get("accent_soft", 60))
+                        except (TypeError, ValueError):
+                            _soft_now = 60
+                        try:
+                            rep = calibrate_accent(
+                                img, cx, cy, accents, _tol,
+                                accent_soft_of(cfg.values),
+                                accent_matcher_of(cfg.values))
+                        except Exception as exc:
+                            print("Calibration failed: %r" % (exc,))
+                            rep = None
                         if rep is None:
                             print("Nothing measurable under the cursor.")
                         else:
@@ -491,16 +552,15 @@ def windows_main(cfg, identity=None):
                             print("  strong matches now: %.0f%%"
                                   % (rep["strong_frac"] * 100.0))
                             print("  suggested accent_soft: %d (now %d)"
-                                  % (rep["suggested_soft"],
-                                     int(cfg.get("accent_soft", 60))))
+                                  % (rep["suggested_soft"], _soft_now))
 
             else:
                 print("Unknown command '%s'. Type h for help, q to quit." % line)
 
     except KeyboardInterrupt:
         app.request_quit()
-
-    hook_thread.join(timeout=2.0)
+    finally:
+        hook_thread.join(timeout=2.0)
 
     print("")
     log(
@@ -510,7 +570,7 @@ def windows_main(cfg, identity=None):
 
     return 0
 
-# ------------------------------------------------------------------
-# GUI (tkinter) - the default interface; --console keeps the old one
-# ------------------------------------------------------------------
+
+
+
 

@@ -1,78 +1,3 @@
-"""Snappy AI - default graphical interface.
-
-Flow: sign-in window (OAuth: Discord only, straight from the app)
--> subscription gate (Stripe entitlement, signed on GitHub) -> main
-window. Visual contract:
-
-  * rounded corners on every button (PIL-drawn PNG masks; plain flat
-    buttons as fallback when Pillow is missing)
-  * no focus rings, no press flash on any button
-  * live light/dark switching in the SAME window: one shared palette
-    dict + a tree-walk restyle (every widget carries a theme role)
-  * the window title bar follows the theme too (DWM on Windows 10/11)
-  * header: a card flush with the client-area top (v8.29) with the
-    usual 10 px side gutters (v8.30) and a FIXED height (v8.31 made
-    it 64 px, 20 px shorter than v8.30; v8.32 gave 10 px back for the
-    raised identity stack) carrying a bigger logo plus a two-line
-    stack - the title and a "build <version>" stamp in the seat the
-    e-mail used to occupy (v8.34) - sitting 4 px above the logo's
-    centring remainder (v8.33), with the mark keeping its exact seat,
-    and the [theme switch] [Log Out] | [Pause] [Launch] cluster
-  * status bar (v8.34): one row, two anchors. Left = the live counters
-    ("Assisted N | passed N | theme: X"); right = "Registered to:
-    <e-mail>    Status: <licence>", which is where the header's e-mail
-    and licence lines moved to. Both in F_DESC on status_bg, and the
-    right-hand line refreshes on every 30-minute entitlement re-check
-  * custom tab bar (selected tab bigger), single-column settings,
-    hover descriptions in one bar, Apply appears only when dirty
-  * v8.38 tabs: eight of them, wrapping onto as many rows as the
-    window width needs. v8.39 renamed and regrouped them: Colors
-    (the two colour lists + Current RGB Value as full-width rows with
-    their values on the RIGHT like every other tab - the lists as
-    colour boxes, the RGB row as three channel-glow boxes - then the
-    picker bottom-left with its controls on the right edge, v8.43),
-    Handler (contrast + item-size
-    gates + accent strictness), Experimental (every dropdown, derived
-    from META's kinds), Help (read-only scrollable tuning guide)
-  * v8.39 localisation: every visible string goes through i18n.L and
-    re-registers a re-text closure, so the Language button (footer,
-    beside Export Config) switches the whole interface live; the
-    chooser lists native names with measured coverage and partial
-    catalogs fall back key-by-key to English
-  * v8.39: the Apply button lives in the description bar's row, flush
-    right, opposite the text it commits - not in the footer beside the
-    running/standby light
-  * Assistance tab (v8.37): every on/off setting is a PILL SWITCH in
-    the Light/Dark switch's own geometry - knob on the RIGHT and the
-    track filled with the logo's red when the setting is on, knob left
-    on the neutral track when it is off - with a small On/Off word
-    beside it, because colour alone is not an accessible encoding in a
-    product for low-vision users. The BooleanVar stays the single
-    source of truth, so Apply/dirty/reload behave exactly as before
-  * Macros tab (v8.46): TWO COLUMNS - the five key macros left, and
-    BESIDE them the recordings in a compact five-row box (five is the
-    library cap: Ctrl+1..5 play those positions). Every recording row
-    carries its OWN "Repeat until stopped" pill switch (the column
-    appears only once at least one recording exists), Rename / Export
-    / Import / Delete sit side by side in the box's bottom-right
-    corner, and clicking a row selects that recording for them and
-    for the play shortcut. Recordings capture EVERYTHING the user
-    does: every key, every mouse button and the cursor trail, and
-    replay it exactly (tagged steps in macros.json, export marker 2,
-    v1 keyboard-only files still import).
-  * Reject window + shared-seat dialog (v8.47): CLEAN CARD surface.
-    The blurred-logo backdrop (a 14 px GaussianBlur over the red
-    snake) left saturated red blotches peeking out from behind the
-    centred card and flat dead margins beside it - in the field the
-    window sides read as dirty spots and texture. Both windows are
-    now one flat themed card like every other window in the product,
-    and the reject window re-fits its frame whenever its text
-    changes (language switch while it is open included), so a tall
-    translation can never clip the card.
-
-The GUI never calls thread-bound Windows APIs directly: actions go to
-the hook thread via PostThreadMessage.
-"""
 
 import colorsys
 import io
@@ -90,35 +15,33 @@ import i18n
 import logo
 import online
 import vision
-try:
-    import provider_logos
-except ImportError:
-    # older partial copy of the project: sign-in falls back to
-    # text-only buttons instead of crashing at launch
-    provider_logos = None
 from assist import start_app
 from config import DEFAULT_CONFIG, _coerce_value
-from core import APP_NAME, log
+from core import APP_NAME, IS_WINDOWS, log
 try:
-    # core.py newer than v8.23: the ring buffer and log file behind the
-    # version stamp in the header. Nothing in the interface reads them -
-    # they exist so a windowless build still records what happened.
+
+
+
     from core import APP_VERSION
-except ImportError:          # older core.py next to a newer gui.py
+except ImportError:
     APP_VERSION = "?"
 from hotkeys import MACRO_SLOTS, REC_PLAY_SLOTS
-from win32rt import PostThreadMessage, WM_HOTKEY, get_cursor_pos, \
-    virtual_screen
+if IS_WINDOWS:
+    from win32rt import (PostThreadMessage, WM_HOTKEY, get_cursor_pos,
+                         virtual_screen)
+else:
+    PostThreadMessage = WM_HOTKEY = get_cursor_pos = virtual_screen = None
 
 try:
     from win32rt import apply_window_theme
 except ImportError:
-    # Older win32rt.py next to a newer gui.py (partial file copy):
-    # degrade gracefully instead of crashing at launch.
+
+
     def apply_window_theme(*_args, **_kw):
         pass
-    log("win32rt.py is older than gui.py - title-bar theming disabled. "
-        "Copy ALL project files, then rebuild.")
+    if IS_WINDOWS:
+        log("win32rt.py is older than gui.py - title-bar theming disabled. "
+            "Copy ALL project files, then rebuild.")
 
 try:
     from PIL import Image as _PILImage
@@ -133,16 +56,16 @@ def hex2rgb(value):
     return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
 
 
-# ----------------------------------------------------------------------
-# Live localisation (v8.39)
-#
-# Every widget that shows a translatable string registers a zero-arg
-# closure here that re-applies its text from the current catalog; a
-# language change runs the lot, so the window re-words itself without
-# being rebuilt.  A closure returns False when its widget is gone, and
-# apply_language() prunes it - logout/login loops must not accumulate
-# dead callbacks.
-# ----------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
 
 RETEXT = []
 
@@ -153,7 +76,6 @@ def R(fn):
 
 
 def apply_language():
-    """Re-word every registered widget in the live language."""
     dead = []
     for fn in list(RETEXT):
         try:
@@ -176,12 +98,6 @@ def _live(w):
 
 
 def label_key(key):
-    """The catalog key a setting name lives under.
-
-    Generated families (the five macro slots, the five play-slot
-    hotkeys) share one PATTERN key each with a %d, so a locale adds
-    three strings instead of fifteen and a sixth slot could never be
-    untranslated."""
     if key.startswith("macro") and key.endswith("_key"):
         return "lbl.macro_key"
     if key.startswith("macro") and key.endswith("_action"):
@@ -192,7 +108,6 @@ def label_key(key):
 
 
 def tr_label(key):
-    """Setting name in the live language, META English as fallback."""
     lk = label_key(key)
     t = i18n.L(lk)
     if t == lk:
@@ -209,8 +124,6 @@ def tr_label(key):
 
 
 def desc_key(key):
-    """Catalog key of a hover description; generated families share
-    pattern keys exactly like label_key()."""
     if key.startswith("macro") and key.endswith(("_key", "_action")):
         return "desc.macro_" + ("key" if key.endswith("_key") else "action")
     if key.startswith("key_play") and key[len("key_play"):].isdigit():
@@ -219,18 +132,21 @@ def desc_key(key):
 
 
 def tr_desc(key):
-    """Hover description; en is published from META at import (plus
-    the three generated patterns below), other locales override."""
     dk = desc_key(key)
     t = i18n.L(dk)
+    if t == dk:
+        try:
+            return META[key][1]
+        except (KeyError, IndexError):
+            return dk
     if dk == "desc.key_play_n" and "%d" in t:
         t = t % int(key[len("key_play"):])
     return t
 
 
-# ----------------------------------------------------------------------
-# Themes, fonts, metadata
-# ----------------------------------------------------------------------
+
+
+
 
 THEMES = {
     "light": dict(
@@ -239,14 +155,14 @@ THEMES = {
         green="#2e7d32", amber="#b26a00",
         tab_bg="#eceef1", desc_bg="#e8eaed", status_bg="#e8eaed",
         light_bg="#dfe2e6",
-        # "switch_on" is the ON colour of the Assistance tab's pill
-        # switches, and it is the logo's own red: #cc2f38 is the mean
-        # colour of the snake's fully-opaque head/upper body in
-        # LOGO_PNG_B64 (the mark runs #d53439 at the head down to
-        # #9c2133 in the tail, so the vivid end is what reads as "the
-        # Snappy AI red").  Kept as the literal sample in the light
-        # theme, where it measures 5.2:1 against both the white card
-        # and the white knob.
+
+
+
+
+
+
+
+
         switch_on="#cc2f38",
     ),
     "dark": dict(
@@ -255,19 +171,19 @@ THEMES = {
         green="#66bb6a", amber="#ffb74d",
         tab_bg="#17181d", desc_bg="#17181d", status_bg="#17181d",
         light_bg="#343845",
-        # Same hue, brightened by the transform this palette already
-        # applies to its other state colours (accent #c62828 ->
-        # #ef5350, green #2e7d32 -> #66bb6a): the raw logo red only
-        # reaches 2.75:1 on the dark card, this reaches 3.6:1, which
-        # clears the 3:1 bar for a non-text control.
+
+
+
+
+
         switch_on="#e04a52",
     ),
 }
 
-# Pill-switch geometry, shared by the Light/Dark switch in the header
-# and the on/off switches on the Assistance tab so the two read as one
-# control family: a 46 x 22 track, a 16 px knob with a 3 px inset, and
-# the knob ON THE RIGHT when the setting is on.
+
+
+
+
 SW_W, SW_H = 46, 22
 SW_KNOB, SW_PAD, SW_RADIUS = 16, 3, 11
 
@@ -281,85 +197,141 @@ F_ENTRY = ("Segoe UI", 11)
 F_TAB = ("Segoe UI", 12, "bold")
 F_TAB_OFF = ("Segoe UI", 10)
 
-# v8.31 header geometry.  The owner asked for a BIGGER logo, a card
-# 20 px SHORTER than v8.30 (which was 84 px tall: the 52 px logo plus
-# 16 px of logo padding above and below), and the three identity
-# lines compacted beside the logo.  The card height is now a fixed
-# constant - the contents are sized to live inside it, so the strip
-# stopped being whatever the installed fonts happened to request.
-# The logo grows 52 -> 60 px and the identity lines get their own
-# tighter type ramp (title 15 bold, the e-mail and licence lines
-# 9 pt, 1 px between them) so the whole block reads as one compact
-# identity cluster next to the mark.
-# v8.32: the owner field-tested v8.31, kept the logo size but gave
-# the strip 10 of the 20 px back (64 -> 74, the main window growing
-# with it) so the identity stack could move UP: the title now opens
-# on the logo's top row - the snake's head - instead of riding
-# centred, and the e-mail / licence lines hang off it with their
-# 1 px gaps.  The mark itself keeps its exact seat (same left
-# gutter, same vertical centring), so growing the strip never moves
-# it sideways.
-HEADER_H = 74
-HEADER_LOGO_PX = 60
-# v8.33: the identity stack rides 4 px HIGHER than the logo's centring
-# remainder.  The owner's crop showed the third line (the licence
-# status) running tight against the card's bottom edge; lifting the
-# whole stack bought that room back without touching the mark.
-# v8.34: that third line is gone - the e-mail and licence status moved
-# to the status bar - so the stack is just the title and a build stamp
-# and no longer risks clipping at all.  The raise is KEPT: it is the
-# seat the owner signed off on, and the two-line stack reads better
-# slightly high next to the centred 60 px mark than dead level with it.
-HEADER_TEXT_RAISE = 4
-# First row of the identity stack: the logo rides centred in the
-# strip, so its top edge - the snake's head - is (HEADER_H -
-# HEADER_LOGO_PX) // 2 px below the card top; the title box starts
-# HEADER_TEXT_RAISE px above that row.  Clamped at 0 so a future
-# shorter strip can never pack the title off the top of the card.
-HEADER_TEXT_TOP = max(0, (HEADER_H - HEADER_LOGO_PX) // 2
-                      - HEADER_TEXT_RAISE)
-# v8.35: both header faces grew by 5 pt on the owner's ask - the title
-# 15 -> 20 bold, the build stamp 9 -> 14.  Neither constant is used
-# anywhere else in the file, so nothing outside the header card moves.
-# v8.36: the build stamp came back down to 10 pt - at 14 it read as a
-# second headline rather than a footnote to the title.  10 pt is also
-# exactly F_DESC, the face the status bar and the hover descriptions
-# use, so the small print now matches across the window.
-F_HEAD_H1 = ("Segoe UI", 20, "bold")
-F_HEAD_LINE = ("Segoe UI", 10)
 
-# v8.36: optical left inset for the build stamp, in px.
-#
-# Both header labels are packed anchor="w" in the same frame, so their
-# BOXES already start on the same pixel - the misalignment is in the
-# glyphs.  A font's left side bearing scales with its em size, so the
-# 20 pt bold "S" of "Snappy AI" starts a pixel or two further right than
-# the 10 pt "b" of "build", and the smaller line reads as hanging out to
-# the left.  Nudging the stamp right by this much lines the two up by
-# eye.  This is the ONE number to tune if it still looks off on your
-# display - it depends on the font's metrics and your DPI scale, neither
-# of which can be measured without a real screen.
-HEADER_BUILD_INDENT = 2
 
-# How often a RUNNING instance re-asks the auth worker whether the
-# subscription is still active (v8.27: a built-in constant - the
-# user-facing "Subscription re-check" setting was removed).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+TOPBAR_H = 74
+TOPBAR_LOGO_PX = 60
+
+
+
+
+
+
+
+
+
+TOPBAR_TEXT_RAISE = 4
+
+
+
+
+
+TOPBAR_TEXT_TOP = max(0, (TOPBAR_H - TOPBAR_LOGO_PX) // 2
+                      - TOPBAR_TEXT_RAISE)
+
+
+
+
+
+
+
+F_TOP_H1 = ("Segoe UI", 20, "bold")
+F_TOP_LINE = ("Segoe UI", 10)
+
+
+
+
+
+
+
+
+
+
+
+
+TOPBAR_BUILD_INDENT = 2
+
+
+
+
 ENTITLEMENT_CHECK_MINUTES = 30
 
 META = {
-    # v8.40: every label and description rewritten in plain user
-    # language - no config keys, no engine jargon in a name.  Dropdowns
-    # whose stored value is a code word are "map" kind: the display
-    # string is human, the stored value stays the code the engine and
-    # old config files expect.
-    "block_bound_keys": ("Single-key shortcuts swallow the key",
-                         "Off (default): a shortcut without Ctrl/Alt/"
-                         "Shift - like 1 or V - works in every program "
-                         "AND still types normally, so pressing it "
-                         "mid-sentence also triggers its action. On: "
-                         "the action still fires everywhere, but the "
-                         "key no longer types while bound.",
-                         "bool", None),
+
+
+    "controller_input": ("Enable controller input",
+        "Read your controller through Windows' own XInput and let it do "
+        "everything a keyboard and mouse do here: the same assistance, the "
+        "same bindings, the same macros, the same recordings. The left stick "
+        "steers the cursor, the right trigger is the press, and Start and "
+        "Back launch and pause out of the box. Bind the rest on the "
+        "Keybindings tab; controller macros sit on the Macros tab. "
+        "Controller OUTPUT - replaying a controller recording, or a 'pad:' "
+        "macro, as a genuine virtual gamepad - needs the optional ViGEmBus "
+        "driver; without it that output falls back to keyboard and mouse. "
+        "Takes effect at once, no restart.",
+        "bool", None),
+    "pad_drive": ("Controller steers and clicks",
+        "With this on the left stick moves the cursor and the trigger is the "
+        "press, so snapping, guide mode, follow memory and auto-click all "
+        "work for somebody holding nothing but a controller. The right stick "
+        "steers the view while that press is held, exactly as holding a mouse "
+        "button does. Turn it off to keep the controller for bindings and "
+        "macros only and leave the mouse as the one pointer.",
+        "bool", None),
+    "pad_output": ("Controller output method",
+        "How a recorded controller step or a 'pad:' macro leaves the "
+        "program. Automatic uses a ViGEmBus virtual pad when that driver is "
+        "installed - the game then sees a real Xbox 360 controller - and "
+        "keyboard/mouse emulation when it is not. Virtual pad insists on "
+        "ViGEm and says so once when it is missing. Emulation never touches "
+        "the driver: every button becomes the key or mouse button named in "
+        "the pad_emulate table in config.ini. Applies on restart.",
+        "map", (('Automatic', 'auto'),
+                 ('Virtual pad (ViGEmBus)', 'vigem'),
+                 ('Keyboard/mouse', 'emulate'))),
+    "pad_launch": ("Controller: launch",
+        "The controller button or combination that launches assistance - the "
+        "same action the keyboard launch shortcut performs. One button "
+        "('start') or several at once ('rb+start'). Empty = unbound.",
+        "pad", None),
+    "pad_pause": ("Controller: pause",
+        "The controller button that pauses assistance and hands the "
+        "controller and the mouse back to you entirely. Empty = unbound.",
+        "pad", None),
+    "pad_mode1": ("Controller: classic mode",
+        "The controller button that switches to mode 1 (classic) - a "
+        "mis-click is suppressed, the cursor snaps and the click is delivered "
+        "for you. Empty = unbound.",
+        "pad", None),
+    "pad_mode2": ("Controller: guide mode",
+        "The controller button that switches to mode 2 (guide) - your click "
+        "always goes through and the cursor moves afterwards. Empty = "
+        "unbound.",
+        "pad", None),
+    "pad_record": ("Controller: record",
+        "The controller button that starts a controller recording. If "
+        "'Controller: stop recording' is empty this same button also stops "
+        "and saves it into the Controller Recordings list, so one "
+        "button toggles. Empty = unbound.",
+        "pad", None),
+    "pad_record_stop": ("Controller: stop recording",
+        "The controller button that stops and saves a controller recording "
+        "into the Controller Recordings list. Leave it "
+        "empty to let the record button toggle instead. Empty = unbound.",
+        "pad", None),
+    "pad_play": ("Controller: play recording",
+        "The controller button that replays the selected controller "
+        "recording, or the "
+        "newest one when nothing is selected. Pressing it while that "
+        "recording is looping stops the loop. Empty = unbound.",
+        "pad", None),
     "hold_follow": ("Keep following while the button is held",
                     "While you keep the left button pressed right "
                     "after a snap - or press again on the remembered "
@@ -372,32 +344,121 @@ META = {
                          "being handled, extra left clicks go straight "
                          "to Windows. On: every left click is assisted, "
                          "so double-clicking keeps snapping to items "
-                         "instead of leaking plain clicks.",
+                         "instead of leaking plain clicks. For rapid "
+                         "click sequences, on is usually right.",
                          "bool", None),
-    "mouse2_action": ("Right-click extra action",
-                      "What a short right-click ALSO does - the right "
-                      "click itself always keeps its normal Windows "
-                      "function. Default: nothing.",
-                      "map", (("Do nothing", 4),
-                              ("Clear the current follow task", 1),
-                              ("Follow the last snapped colour", 2),
-                              ("Pick the colour under the cursor, then "
-                               "follow it", 3))),
-    "mouse2_hold_action": ("Right-hold extra action",
+    "trigger_button": ("Assist trigger button",
+                       "The mouse button assistance listens to. Hold it and "
+                       "the cursor is guided onto the nearest clear item; in "
+                       "Classic mode the click is caught, snapped and pressed "
+                       "for you. Default mouse1 (left). Move it when a game or "
+                       "an application needs that button for itself - the "
+                       "whole behaviour follows, including which button is "
+                       "re-delivered after a snap.", "mouse", None),
+    "options_button": ("Extra-options button",
+                       "The button behind the two extra-action settings "
+                       "(short press and hold). Default mouse2 (right): the "
+                       "click itself always keeps its normal Windows "
+                       "function, the action is added on top. It cannot be "
+                       "the same button as the assist trigger - if the two "
+                       "collide, this one returns to its default.",
+                       "mouse", None),
+    "shift_bypass": ("Bypass input stops assistance",
+                     "On (default): holding the bypass input lets every click "
+                     "pass through untouched - a precision override. Turn it "
+                     "off when that input is held during regular use, or "
+                     "holding it silently disables every correction. Which "
+                     "input that is: 'Bypass key (held)' on the Keyboard & "
+                     "Mouse tab, and its controller equivalent on the "
+                     "Controller tab.",
+                     "bool", None),
+    "bypass_key": ("Bypass key (held)",
+                   "The key or combination that, held down, stops assistance "
+                   "while 'Bypass input stops assistance' on the Assistance "
+                   "tab is on. Default Shift, the "
+                   "long-standing desktop precision override. A modifier on "
+                   "its own is accepted here - this is a hold, not a shortcut "
+                   "- and so is any combination ('ctrl+alt', 'ctrl+alt+x'). "
+                   "Press the button beside it, then press and release what "
+                   "you want.", "keymod", None),
+    "bypass_pad": ("Controller bypass button",
+                   "The controller button or combination that does on a pad "
+                   "what the bypass key does on a keyboard: while it is held, "
+                   "assistance is off. The switch on the Assistance tab still "
+                   "decides whether that counts. Empty = unbound, so a "
+                   "controller-only setup keeps assisting until you choose "
+                   "one.", "pad", None),
+    "pad_click_button": ("Controller click button",
+                         "The controller button that clicks: hold it and the "
+                         "cursor is steered onto the target, exactly like "
+                         "holding the assist trigger button with a mouse. "
+                         "Default rt (right trigger). One button only - a "
+                         "combination here could never be held and released "
+                         "as a click.", "padsingle", None),
+    "pad_right_button": ("Controller extra-options button",
+                         "The controller button behind the same two extra "
+                         "actions the mouse's extra-options button performs. "
+                         "Default lt (left trigger). One button only.",
+                         "padsingle", None),
+    "subject_priority": ("Subject-first targets",
+                     "Off (default): normal ranking - nearest wins, "
+                     "shape and colour break ties. On: a tall 1:2 "
+                     "subject shape anywhere in range outranks other "
+                     "shapes in close calls (no subject shape present: "
+                     "square shapes outrank unshaped items). "
+                     "Combine with colour filtering for precise "
+                     "selection.",
+                     "bool", None),
+    "mouse2_action": ("Extra-options button: short press",
+                      "What a short press of the extra-options button ALSO "
+                      "does - the click itself always keeps its normal "
+                      "Windows function. Which button that is: "
+                      "'Extra-options button' on the Keyboard & Mouse tab, or "
+                      "its controller equivalent. The two follow choices only "
+                      "steer in mode 2; in mode 1 that button never moves the "
+                      "cursor. Default: nothing.",
+                      "map", (('Do nothing', 4),
+                               ('Clear follow task', 1),
+                               ('Follow last colour', 2),
+                               ('Pick colour, then follow', 3))),
+    "mouse2_hold_action": ("Extra-options button: hold",
                            "The same choices, fired when you HOLD the "
-                           "right button for about half a second "
+                           "extra-options button for about half a second "
                            "instead of clicking it. A press is either "
-                           "a click or a hold, never both. Default: "
+                           "a click or a hold, never both. The follow "
+                           "choices only steer in mode 2. Default: "
                            "nothing.",
-                           "map", (("Do nothing", 4),
-                                   ("Clear the current follow task", 1),
-                                   ("Follow the last snapped colour", 2),
-                                   ("Pick the colour under the cursor, "
-                                    "then follow it", 3))),
+                           "map", (('Do nothing', 4),
+                                    ('Clear follow task', 1),
+                                    ('Follow last colour', 2),
+                                    ('Pick colour, then follow', 3))),
     "radius": ("How far from the cursor to look",
                "Search distance in pixels (40-400). Raise it when the "
                "item you want sits just out of reach; lower it when "
                "the wrong neighbour keeps winning.", "int", None),
+    "center_blind_area": ("Centre self-target blindness (ink px)",
+               "Assisted-centre only (hidden cursor): ignore items this small "
+               "that sit exactly on the centre anchor - the overlay's own "
+               "drawn marker and brief flashes, which otherwise "
+               "outscore every real item so corrections land "
+               "~zero. 900 ~= 30x30. 0 disables. Standard cursor "
+               "clicks are never affected.", "int", None),
+    "center_max_step": ("Centre steering cap (px)",
+               "Assisted-centre steering steps are clamped to this size with "
+               "direction exact: a far pick corrects toward the item "
+               "without jumping the view in one step. 160 default. "
+               "0 disables (uncapped).", "int", None),
+    "subject_focus_bias": ("Subject focus bias (0-100)",
+               "For tall 1:2 subject-shape winners only: pull the snap point "
+               "from the mass centroid toward the box top by this "
+               "share - 30 lands near the upper part. 0 (default) off.",
+               "int", None),
+    "motion_sense": ("Motion sense (0-100)",
+               "Prefer items that moved since the previous scan - a "
+               "moving item outranks static ones in close "
+               "calls. Assisted-centre only. 0 (default) off; 35 is a sane "
+               "first try. Brief flashes are ignored.",
+               "int", None),
     "on_target_dist": ("Already-on-item distance",
                        "If your click lands within this many pixels of "
                        "an item's centre, nothing moves - you hit it.",
@@ -411,8 +472,8 @@ META = {
                         "In classic mode, a second snap near the same "
                         "spot within this time becomes a double-click "
                         "on the item.", "float", None),
-    # v8.43: kind "colors" - the row's value is a strip of COLOUR
-    # BOXES (see make_row), not a typed "r,g,b; r,g,b" string.
+
+
     "accent_color": ("My colour(s)",
                      "The colour Snappy AI should prefer, shown as "
                      "colour boxes on the right. Pick a colour below "
@@ -433,12 +494,12 @@ META = {
     "accent_tolerance": ("Colour match strictness",
                          "How close a colour must be to count as yours "
                          "(4-90). Lower = stricter.", "int", None),
-    # v8.49: these two descriptions now state their DEPENDENCY on each
-    # other. At 0 near-miss shades both engines collapse to the same exact
-    # tolerance box, so the engine dropdown genuinely does nothing until
-    # this is above 0 - which is documented in config.py but was invisible
-    # here, and reads as a broken control to the person who set 0 and then
-    # tried switching engines.
+
+
+
+
+
+
     "accent_soft": ("Accept near-miss shades",
                     "0-100: how much lighter, darker or washed-out "
                     "versions of your colour still count in its "
@@ -452,14 +513,13 @@ META = {
                        "comparison. Only applies while 'Accept "
                        "near-miss shades' is above 0 - at 0 both use the "
                        "same exact colour box.",
-                       "map", (("Perceptual - how colours look "
-                                "(recommended)", "oklab"),
-                               ("Classic - the older engine", "hsv"))),
+                       "map", (('Perceptual (recommended)', 'oklab'),
+                                ('Classic (older engine)', 'hsv'))),
     "accent_boost": ("Colour tie-break strength",
                      "How much your colour lifts an item's score "
                      "(0-3). Raise toward 1.5-2 when the wrong item "
                      "still wins.", "float", None),
-    # v8.43: colour boxes here too - same widget as My colour(s).
+
     "exclude_color": ("Never-click colour(s)",
                       "Items containing these colours are never "
                       "assisted: clicks on them go straight to "
@@ -481,10 +541,10 @@ META = {
                    "bool", None),
     "motion_predict": ("Lead moving items",
                        "For items that move while you click (scrolling "
-                       "lists, video seek bars), aim slightly ahead so "
+                       "lists, video seek bars), move slightly ahead so "
                        "the click lands on the item, not where it was. "
                        "Still items are unaffected.", "bool", None),
-    "motion_lead_ms": ("How far ahead to aim",
+    "motion_lead_ms": ("How far ahead to lead",
                        "Milliseconds of travel to lead a moving item "
                        "(0-300): 40-80 suits slow scrolling, 100-150 a "
                        "fast seek bar. The lead is capped at 80 px and "
@@ -501,10 +561,18 @@ META = {
                           "is and always looks inside a square at the "
                           "middle of the screen - as wide as your "
                           "\"search distance\" setting (150 px by "
-                          "default). Clicks outside that square pass "
-                          "through completely untouched, like empty "
-                          "space. Off (default): the usual cursor-"
-                          "anchored search.",
+                          "default) - treating the centre itself as "
+                          "the anchor. Highest-contrast items win, "
+                          "your colour only breaks ties. A mouse1 "
+                          "click inside the square snaps onto the "
+                          "item once; KEEP holding and it keeps "
+                          "re-snapping onto each fresh sighting about "
+                          "every 2-3 frames until you let go (or the "
+                          "item leaves the square). Clicks outside "
+                          "that square pass through completely "
+                          "untouched, like empty space. Off "
+                          "(default): the usual cursor-anchored "
+                          "search.",
                           "bool", None),
     "center_follow": ("Keep the cursor on it",
                       "Needs \"Watch the screen centre only\" on. Once "
@@ -531,8 +599,9 @@ META = {
                      "How strongly the remembered item wins ties: "
                      "100% can double its score while fresh, 25% is a "
                      "light nudge.",
-                     "map", (("25%", 0.25), ("50%", 0.5),
-                             ("75%", 0.75), ("100%", 1.0))),
+                     "map", (("Off", 0.0), ("25%", 0.25), ("50%", 0.5),
+                             ("75%", 0.75), ("100%", 1.0), ("150%", 1.5),
+                             ("200%", 2.0), ("300%", 3.0))),
     "follow_seconds": ("How long to remember",
                        "Seconds the remembered item stays preferred "
                        "after your last successful snap (1-120).",
@@ -554,15 +623,16 @@ META = {
                    "Captures everything you do - every key, every "
                    "mouse click and every cursor move - while your "
                    "input still reaches your programs, until the stop "
-                   "shortcut saves it into the Macros list. Arms only "
-                   "while launched.", "str", None),
+                   "shortcut saves it into the keyboard Recordings list. "
+                   "Arms only while launched.", "str", None),
     "key_record_stop": ("Shortcut: stop and save the recording",
                         "Stops capturing, saves the sequence into the "
-                        "Macros list, and halts a running playback.",
+                        "keyboard Recordings list, and halts a running "
+                        "playback.",
                         "str", None),
     "key_play": ("Shortcut: play the selected recording",
-                 "Replays the recording selected in the Macros tab, or "
-                 "the newest one when nothing is selected. Pressed on "
+                 "Replays the keyboard recording selected in the Macros tab, "
+                 "or the newest one when nothing is selected. Pressed on "
                  "a repeating recording, it stops it.", "str", None),
     "key_mode1": ("Shortcut: classic mode (up to 4 keys)",
                   "Comma-separated, e.g. '1, f1, ctrl+f1, v'. See the "
@@ -574,43 +644,55 @@ META = {
                   "str", None),
     "capture_backend": ("Screen capture engine",
                         "How the screen is photographed. Automatic "
-                        "picks the fastest that works; Compatible "
-                        "always works, including Remote Desktop and "
-                        "virtual machines. Applies on restart.",
-                        "map", (("Automatic - fastest with safe "
-                                 "fallback", "auto"),
-                                ("Desktop Duplication - fastest on most "
-                                 "PCs", "dxcam"),
-                                ("Compatible - always works (Remote "
-                                 "Desktop, VMs)", "mss"),
-                                ("Windows Graphics Capture - "
-                                 "experimental", "wgc"))),
-    # v8.50: click DELIVERY backend - the opt-in Interception option.
-    # The dropdown shows availability in its own label; assist.py falls
-    # back to win32 with a log line if the driver is missing, so an
-    # unavailable choice can never eat a click.
+                        "uses the compatible capture that always "
+                        "works, including over Remote Desktop and in "
+                        "virtual machines. Desktop Duplication is "
+                        "faster and stays opt-in: a minority of GPU "
+                        "drivers and protected-content apps answer it "
+                        "with black frames, so it is never chosen for "
+                        "you. Applies on restart.",
+                        "map", (('Automatic (compatible)', 'auto'),
+                                 ('Desktop Duplication', 'dxcam'),
+                                 ('Compatible (RDP, VMs)', 'mss'),
+                                 ('Windows Graphics Capture', 'wgc'))),
+
+
+
+
     "input_backend": ("Click delivery method",
                       "How your assisted clicks reach the screen. "
                       "Standard works everywhere with nothing to "
                       "install and is what almost everyone should "
-                      "keep. Driver level sends clicks through the "
-                      "Interception kernel driver instead, for the "
-                      "few games that ignore normal synthetic clicks "
-                      "- it needs interception.dll next to Snappy AI "
-                      "and the driver installed (run interception.exe "
-                      "install as administrator, then reboot). If "
-                      "either is missing, Snappy AI says so once and "
-                      "keeps working the standard way. Applies on "
-                      "restart.",
-                      "map", (("Standard Windows method", "win32"),
-                              ("Driver level (Interception) - for "
-                               "games that ignore synthetic clicks",
-                               "interception"))),
-    # v8.49: the three detection knobs have a documented precedence that
-    # was invisible here. "Auto-adjust for dim screens" may only LOWER the
-    # bar, and it stands aside entirely once you raise either number above
-    # its stock value - otherwise "raise it if it clicks the wrong thing"
-    # would silently do nothing while the recommended default was on.
+                      "keep. Driver level sends clicks through a "
+                      "kernel driver instead, for the "
+                      "few apps that ignore normal synthetic clicks "
+                      "- it needs only the driver installed (run "
+                      "interception.exe install as administrator, "
+                      "then reboot; no DLL needed, strokes go "
+                      "straight to keyboard.sys/mouse.sys). "
+                      "Server sends every move and click to a "
+                      "companion server over websocket "
+                      "- hardware-level input "
+                      "for apps that ignore SendInput and lack the "
+                      "driver; it needs that server running plus the "
+                      "websocket-client package, and holds arrive as "
+                      "repeated taps. If anything is missing, Snappy "
+                      "AI says so once and keeps working the "
+                      "standard way. Applies on restart.",
+                      "map", (('Standard Windows', 'win32'),
+                               ('Driver level (kernel)', 'driver'),
+                               ('Server (websocket)', 'server'))),
+    "server_url": ("Server address",
+                   "WebSocket URL of the companion server "
+                   "(ws://127.0.0.1:19561). Only used with the "
+                   "Server delivery method. Applies on "
+                   "restart.",
+                   "str", None),
+
+
+
+
+
     "contrast_threshold": ("How faint an edge may be",
                            "Lower finds fainter items (and more "
                            "noise); higher needs crisper edges. Raising "
@@ -624,7 +706,10 @@ META = {
                      "a built-in quality floor keeps noise from "
                      "becoming clickable. Raising this above 48 turns "
                      "off the auto-adjust below for this control - your "
-                     "number is then used exactly.", "int", None),
+                     "number is then used exactly. 'Click items by "
+                     "itself' holds its own stricter floor (60) so it "
+                     "only ever fires on a crisp item, whatever this is "
+                     "set to.", "int", None),
     "adaptive_threshold": ("Auto-adjust for dim screens",
                            "Dark themes and washed-out documents lower "
                            "their own detection bar automatically, so "
@@ -643,7 +728,7 @@ META = {
                  "glued to a bigger item.", "int", None),
     "max_area": ("Largest item size",
                  "Bigger blobs are ignored - usually whole windows or "
-                 "wallpaper, not clickable items.", "int", None),
+                 "background, not clickable items.", "int", None),
     "max_dim": ("Largest item width or height",
                 "Items wider or taller than this are ignored; items at "
                 "a screen edge, like scrollbars, get double.",
@@ -653,9 +738,9 @@ META = {
                             "this long and any held click is given "
                             "back to you.", "float", None),
 
-    # v8.48: colour handling round 2. Three switches, all on by
-    # default - each only ever makes matching stricter about the right
-    # things (lighting, shade states, speckle), never looser about hues.
+
+
+
     "color_adapt": ("Adapt to screen lighting",
                     "Each item is white-balanced against its own "
                     "background before matching, so night light and "
@@ -677,8 +762,8 @@ META = {
                         "never-click list.",
                         "bool", None),
 
-    # v8.48: snap offset. The click point is normally the middle of the
-    # item; these move it, in pixels (right and down are positive).
+
+
     "snap_offset_x": ("Click point: shift left / right",
                       "Moves the click point sideways from the middle of "
                       "the item (-200 to 200, negative goes left). For a "
@@ -692,66 +777,35 @@ META = {
                       "idea as the sideways shift: land on the live part "
                       "of the control.",
                       "int", None),
+    "scan_budget_ms": ("Scan time budget",
+                       "Milliseconds one scan of the whole search area "
+                       "may take before it gives up and lets your click "
+                       "through untouched (60-2000). Raise it on busy "
+                       "screens if detection seems to miss; lower it if "
+                       "clicks feel late on a slow machine. The budget is "
+                       "checked between stages, so a very busy frame can "
+                       "overrun it slightly.",
+                       "int", None),
 
-    # v8.48: auto-click. The ONLY setting in the product that makes the
-    # app act with no gesture from the user, so its label leads with the
-    # consequence ("clicks on its own") rather than the mechanism.
+
+
+
     "auto_click": ("Click items by itself",
                    "Scans the screen centre on its own and clicks the "
                    "best item - no click from you needed; turning this "
                    "on IS the request. With 'My colour(s)' set it "
                    "clicks only items in your colour; without a colour "
-                   "it clicks the highest-contrast item instead (raise "
-                   "'How crisp an auto-click target must be' if it "
-                   "picks too eagerly). Never while paused, never on "
-                   "Snappy AI's own windows, never on a Never-click "
-                   "colour, and it stops at the limit below. Press "
-                   "Pause any time to take the mouse back.",
+                   "it clicks the highest-contrast item instead. "
+                   "Never while paused, never on Snappy AI's own "
+                   "windows, never on a Never-click colour, and it "
+                   "keeps clicking while the item stays visible. "
+                   "Press Pause any time to take the mouse back.",
                    "bool", None),
-    "auto_click_interval": ("Seconds between auto-clicks",
-                            "How often the screen centre is re-checked "
-                            "(0.1-60). The default 0.1 s = ten looks a "
-                            "second, so a fresh item is clicked almost "
-                            "as soon as it appears; the same-spot guard "
-                            "and the pause-before-click keep it from "
-                            "hammering one control. Raise it to 2-5 for "
-                            "a calmer pace.",
-                            "float", None),
-    "auto_click_min_contrast": ("How crisp an auto-click target must be",
-                                "On the same scale as 'Minimum edge "
-                                "strength'. This gate matters MOST when "
-                                "no colour is set: with colour-free "
-                                "auto-clicking only items above this "
-                                "crispness are eligible. Start at the "
-                                "default and raise it if it clicks the "
-                                "wrong thing.",
-                                "int", None),
-    "auto_click_max_clicks": ("Auto-click limit per session",
-                              "How many times it may click on its own "
-                              "after you launch (1-200). When it reaches "
-                              "the limit it stops and tells you, so a "
-                              "wrong setup cannot run away.",
-                              "int", None),
-    "auto_click_settle_ms": ("Pause before an auto-click lands",
-                             "The cursor rests on the target this long "
-                             "(0-2000 ms) before the click, so the "
-                             "program sees the highlight first. 120 suits "
-                             "most windows.", "int", None),
-    "auto_click_repeat_px": ("Stop re-clicking the same spot",
-                             "After an auto-click, a target within this "
-                             "many pixels is left alone (0-400). Without "
-                             "it a button that stays on screen would be "
-                             "clicked again and again.", "int", None),
-    "auto_click_radius": ("How far from the middle to look",
-                          "Auto-clicking searches around the centre of "
-                          "the screen (40-600 px). Raise it for a busy "
-                          "window; lower it so it only ever sees the one "
-                          "control in the middle.", "int", None),
 }
 
-# Macro slots: the number of combo-macro triggers and recording play
-# keys comes from hotkeys.py (five each since v8.17), so descriptions
-# can never be generated for slots the engine does not have.
+
+
+
 for _i in range(1, MACRO_SLOTS + 1):
     META["macro%d_key" % _i] = (
         "Macro %d: press this key" % _i,
@@ -762,72 +816,153 @@ for _i in range(1, MACRO_SLOTS + 1):
         "str", None)
     META["macro%d_action" % _i] = (
         "Macro %d: sends this instead" % _i,
-        "The key combo pressed for you on each trigger press (one "
+        "The key combo pressed for you on each macro-key press (one "
         "press = one combo press): 'ctrl+c', 'ctrl+shift+s', 'space', "
         "'f5' ... Empty = macro off.",
         "str", None)
 
 for _i in range(1, REC_PLAY_SLOTS + 1):
+    META["pad_play%d" % _i] = (
+        "Controller: play recording #%d" % _i,
+        "Replays controller recording #%d of the numbered Controller "
+        "Recordings list in the Macros tab from a "
+        "controller button, by its position in that list. If the list is "
+        "shorter than that, nothing happens. Empty = unbound." % _i,
+        "pad", None)
+
+for _i in range(1, MACRO_SLOTS + 1):
+    META["pad_macro%d_key" % _i] = (
+        "Pad macro %d: press this" % _i,
+        "The controller button or combination that MEANS the macro: 'a', "
+        "'rb+y', 'ls+rs' ... While launched, pressing it fires the output "
+        "beside it exactly once and nothing reaches your programs. A "
+        "combination that contains a shorter bound combination wins, so "
+        "'rb+a' never also fires 'a'. Empty = macro off.",
+        "pad", None)
+    META["pad_macro%d_action" % _i] = (
+        "Pad macro %d: sends this" % _i,
+        "What the controller macro fires: a key combo ('ctrl+c', 'f5', "
+        "'shift+tab') which works everywhere, or a controller combo written "
+        "as 'pad:a+b', which needs the ViGEmBus virtual pad and is delivered "
+        "through the pad_emulate keyboard/mouse table without it. Empty = "
+        "macro off.",
+        "str", None)
+
+for _i in range(1, REC_PLAY_SLOTS + 1):
     META["key_play%d" % _i] = (
         "Shortcut: play recording #%d" % _i,
-        "Replays recording #%d of the numbered list in the Macros tab, "
-        "by its position in the list. If the list is shorter than "
+        "Replays keyboard recording #%d of the numbered Recordings list in "
+        "the Macros tab, "
+        "by its position in that list. If the list is shorter than "
         "that, nothing happens." % _i,
         "str", None)
 
-# Tab layout - settings live on tabs BY OPTION CATEGORY (v8.38):
-#   Assistance          = every ON/OFF switch that changes BEHAVIOUR
-#   Colors              = the two colour lists + the Current RGB
-#                         Value row as full-width rows, values on the
-#                         right like every other tab (the lists as
-#                         colour boxes, the RGB row as three channel-
-#                         glow boxes), then the picker bottom-left
-#                         with its controls on the right edge (v8.43;
-#                         "Detection & Colours" before v8.39)
-#   Handler             = the contrast gates, the item-size gates and
-#                         the accent-matching strictness (v8.38 as
-#                         "Color Handling", renamed in v8.39)
-#   Hotkeys             = every bindable key
-#   Macros              = macro slots + the recording library (custom UI)
-#   Advanced            = every remaining value option (geometry,
-#                         timing, size gates, right-button actions)
-#   Experimental        = every DROPDOWN (choice) setting: engine
-#                         selection, kept apart because each has a
-#                         tested default and the alternatives exist
-#                         for A/B comparison or special hardware
-#   Help                = read-only tuning guide (scrollable)
-# (mode/theme/entitlement keys stay off the tabs: mode switches with
-# its hotkeys, theme with the header switch, the rest are deployment.)
-TAB_ASSIST = ["block_bound_keys", "hold_follow", "rapid_click_snap",
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+TAB_ASSIST = ["controller_input", "pad_drive",
+              "shift_bypass", "subject_priority",
+              "hold_follow", "rapid_click_snap",
               "follow_enabled", "motion_predict", "motion_3d",
               "watch_center_only",
               "center_follow",
               "accent_only",
               "adaptive_threshold", "luminance_norm",
               "color_adapt", "accent_variants", "accent_coherent",
-              "auto_click",
-              "auto_click_interval", "auto_click_min_contrast",
-              "auto_click_max_clicks", "auto_click_settle_ms",
-              "auto_click_repeat_px", "auto_click_radius"]
+              "auto_click"]
 TAB_DETECT = ["accent_color", "exclude_color"]
 TAB_KEYS = ["key_launch", "key_pause", "key_mode1", "key_mode2",
             "key_record", "key_record_stop", "key_play", "key_play1",
             "key_play2", "key_play3", "key_play4", "key_play5"]
+# The tab order. "help" is packed on the right of the bar; everything else on
+# the left. Module-level so the tests read the same list the UI is built from.
+TAB_NAMES = ["assist", "handler", "keyboard", "controller", "macros",
+             "advanced", "experimental", "help"]
+
+TAB_PAD = ["pad_launch", "pad_pause", "pad_mode1", "pad_mode2",
+           "pad_record", "pad_record_stop", "pad_play",
+           "pad_play1", "pad_play2", "pad_play3", "pad_play4", "pad_play5"]
+# The controller's two role buttons and its bypass. They were config.ini-only
+# until now, which left a controller user unable to say what clicks.
+TAB_PAD_ROLE = ["pad_click_button", "pad_right_button", "bypass_pad"]
+# The mouse's two role buttons: what assistance listens to, and what the
+# extra-action settings hang off. Both were hardcoded to left and right.
+TAB_MOUSE = ["trigger_button", "options_button"]
+# Flat rows for the two input tabs, with no section titles. Each position
+# mirrors the other tab: role, role, bypass, then the twelve actions in the
+# same order - so row N on one tab is the same kind of setting as row N on
+# the other. The bypass on each tab sets that input type only; the on/off
+# switch stays on the Assistance tab.
+TAB_KEYBOARD = ["trigger_button", "options_button", "bypass_key",
+                "key_launch", "key_pause", "key_mode1", "key_mode2",
+                "key_record", "key_record_stop", "key_play", "key_play1",
+                "key_play2", "key_play3", "key_play4", "key_play5"]
+TAB_CONTROLLER = ["pad_click_button", "pad_right_button", "bypass_pad",
+                  "pad_launch", "pad_pause", "pad_mode1", "pad_mode2",
+                  "pad_record", "pad_record_stop", "pad_play",
+                  "pad_play1", "pad_play2", "pad_play3", "pad_play4",
+                  "pad_play5"]
 TAB_COLOR = ["contrast_threshold", "min_contrast",
              "min_area", "max_area", "max_dim",
              "accent_tolerance", "accent_soft", "accent_boost"]
-TAB_ADV = ["radius", "on_target_dist", "glide_ms", "watcher_seconds",
+TAB_ADV = ["radius", "center_blind_area", "center_max_step", "subject_focus_bias", "motion_sense", "on_target_dist", "glide_ms", "watcher_seconds",
            "stall_pause_seconds", "merge_distance",
-           "motion_lead_ms", "follow_seconds",
-           "snap_offset_x", "snap_offset_y"]
-# Every "choice" (dropdown) setting.  Derived from META's kinds rather
-# than hand-kept, so a dropdown added to META in the future lands here
-# by construction and can never silently sit on the wrong tab - which
-# is the rule this tab exists to enforce.
+           "motion_lead_ms", "follow_seconds", "scan_budget_ms",
+           "snap_offset_x", "snap_offset_y",
+           "server_url"]
+
+
+
+
+# Derived: every choice/map setting gets a row here. A setting that is
+# switched live by a hotkey instead of stored ("mode", which the 1/2 keys
+# flip) deliberately has no META entry at all, so it cannot creep back in.
 TAB_EXPERIMENTAL = [k for k in META if META[k][2] in ("choice", "map")]
 
+# Bindings and macro fields are CAPTURED, not typed: rewrite their kind so
+# make_row/macro_entry give them a "Press" button. Done here rather than in 24
+# META entries so the two cannot drift apart when a slot is added.
+_CAPTURE_KIND = {}
+for _k in TAB_KEYS:
+    _CAPTURE_KIND[_k] = "key"
+for _k in TAB_MOUSE:
+    _CAPTURE_KIND[_k] = "mouse"
+for _k in TAB_PAD:
+    _CAPTURE_KIND[_k] = "pad"
+_CAPTURE_KIND["bypass_key"] = "keymod"
+_CAPTURE_KIND["bypass_pad"] = "pad"
+_CAPTURE_KIND["pad_click_button"] = "padsingle"
+_CAPTURE_KIND["pad_right_button"] = "padsingle"
+for _i in range(1, MACRO_SLOTS + 1):
+    _CAPTURE_KIND["macro%d_key" % _i] = "key"
+    _CAPTURE_KIND["macro%d_action" % _i] = "key"
+    _CAPTURE_KIND["pad_macro%d_key" % _i] = "pad"
+    _CAPTURE_KIND["pad_macro%d_action" % _i] = "padkey"
+for _k, _kind in _CAPTURE_KIND.items():
+    if _k in META:
+        META[_k] = (META[_k][0], META[_k][1], _kind, META[_k][3])
+
 def val_slug(value):
-    """Catalog-safe slug of a stored dropdown value: 1.0 -> "1_0"."""
     return str(value).replace(".", "_")
 
 
@@ -836,19 +971,10 @@ def val_key(key, value):
 
 
 def map_pairs(key):
-    """The (EN display, stored-value) pairs of a "map" (dropdown-with-
-    values) setting, e.g. follow_boost's 25%..100% -> 0.25..1.0."""
     return list(META[key][3])
 
 
 def map_pairs_live(key):
-    """The same pairs with the display strings in the LIVE language.
-
-    v8.40 fix: dropdown values are user-visible text, so they are
-    catalog keys (val.<setting>.<value>) like everything else, with the
-    English META display as fallback.  A Combobox's `values` list is
-    frozen at creation, so every map row rebuilds it from here on a
-    language change."""
     out = []
     for disp, val in META[key][3]:
         t = i18n.L(val_key(key, val))
@@ -857,13 +983,6 @@ def map_pairs_live(key):
 
 
 def map_display(key, value):
-    """Display string for a stored value, in the LIVE language.
-
-    Exact match first (this is how the code-word maps work: "auto",
-    "accent", 4 ...).  Only when nothing matches exactly and both sides
-    are numbers - an old config.json carrying follow_boost = 2.0, which
-    a four-step dropdown cannot show - fall back to the NEAREST step,
-    so the widget stays honest instead of blank."""
     pairs = map_pairs_live(key)
     for disp, val in pairs:
         if str(val) == str(value):
@@ -879,12 +998,6 @@ def map_display(key, value):
 
 
 def map_value(key, display):
-    """Stored value for a display string, or None when unknown.
-
-    Accepts the display in ANY language (live first, English as a
-    second pass): a StringVar can still hold the previous language's
-    word for one paint cycle after a switch, and Apply must never lose
-    a setting because of that."""
     for pairs in (map_pairs_live(key), map_pairs(key)):
         for disp, val in pairs:
             if disp == display:
@@ -892,45 +1005,19 @@ def map_value(key, display):
     return None
 
 
-# ----------------------------------------------------------------------
-# English prose, published into the i18n catalog at import (v8.40).
-#
-# The English source of truth stays here, next to the widgets it
-# describes, while every other locale overrides by key.  All of it is
-# written in the words the settings themselves use - no config keys,
-# no engine jargon - because the reader is a person with low vision,
-# not a developer.
-# ----------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
 
 PROSE = {
     "desc.default": "Hover over a setting name to see what it does.",
 
-    "note.assist":
-        "Every switch that changes behaviour while launched. The two "
-        "modes switch with your mode keys - the Keybindings tab "
-        "explains what each mode does. Assistance always starts "
-        "paused; Launch is the only on/off. Where the engine looks and "
-        "how clicks feel live on Advanced; what counts as an item "
-        "lives on Handler.",
-    "note.colors":
-        "The two lists at the top choose which colours Snappy AI "
-        "prefers or refuses. Each shows its colours as boxes on the "
-        "right, fifteen at most; clicking a box removes that colour "
-        "again, and an empty list shows a crossed-out box and counts "
-        "as off. 'Add to preferred colours' and 'Add to refused "
-        "colours' put the colour standing in the picker into the "
-        "matching list. 'Current RGB Value' is three glow boxes - "
-        "brighter means more red, green or blue in the picked colour; "
-        "it follows the picker and cannot be typed into. The picker "
-        "mixes a colour like a paint program. Beside it: fifteen "
-        "preset swatches load a colour into the picker; 'Pick color "
-        "from screen' takes the single colour under the cursor (after "
-        "a 3 s countdown); 'Suggest colors from screen' fills a row "
-        "with the main UI colours found around the cursor - click one "
-        "to load it into the picker.",
-    # v8.42: the read-only R,G,B row under the two colour lists.
-    # v8.43: its three boxes are no longer numbers - each one glows
-    # with how much of its channel the picked colour holds.
     "col.rgb.name": "Current RGB Value",
     "col.rgb.desc":
         "Three boxes showing the colour sitting in the picker right "
@@ -938,73 +1025,6 @@ PROSE = {
         "with green, the third with blue - brighter means more. The "
         "row follows the picker, the preset swatches and the screen "
         "buttons; it cannot be typed into.",
-    "note.handler":
-        "What counts as a clickable item: how faint an edge may be, "
-        "how crisp it must be, and how big or small an item may be. "
-        "Nothing found? Loosen these. Wrong thing found? Tighten them, "
-        "or use your colour on the Colors tab.",
-    "note.keybindings":
-        "Every shortcut - and below it, what the two modes do, how to "
-        "record your own key and mouse input, and how single keys "
-        "differ from key combos.",
-    "note.macros":
-        "A macro turns one key press into a whole combo while "
-        "launched. Beside the macros, your recordings: up to five "
-        "named captures of everything you did - every key, mouse "
-        "click and cursor move - that replay exactly as recorded. "
-        "Click a recording to select it; each row carries its own "
-        "'Repeat until stopped' switch, and 'Rename', 'Export', "
-        "'Import' and 'Delete' sit at the bottom of the box.",
-    "note.advanced":
-        "Distance and timing settings that change how clicks feel "
-        "rather than what is found. Most people never need to touch "
-        "these; the defaults are the tested ones.",
-    "note.macros_keys":
-        "Record/play shortcuts live on the Keybindings tab (defaults: "
-        "Ctrl+Alt+R record, Ctrl+Alt+S stop and save, Ctrl+Alt+M play, "
-        "Ctrl+1..5 play recordings #1..#5 by list position).",
-    "note.experimental":
-        "Engine choices, each with a tested default. Change them only "
-        "when comparing engines, on unusual hardware, or when support "
-        "asks - the capture engine applies on restart.",
-
-    "kb.mode.t": "What the two modes do",
-    "kb.mode.b":
-        "Guide mode (default, shortcut 2): your click always reaches "
-        "the program untouched; after you release the button, the "
-        "cursor moves onto the nearest clear item, so your next click "
-        "starts from it. Nothing is ever eaten - the safest mode.  "
-        "Classic mode (shortcut 1): if you click near an item, that "
-        "mis-click is caught, the cursor snaps onto the item and "
-        "Snappy AI clicks it for you; if nothing is near, your click "
-        "is given back untouched.  In both modes, holding Shift while "
-        "clicking bypasses assistance for that one click.",
-    "kb.rec.t": "How to record and replay your own key and mouse input",
-    "kb.rec.b":
-        "While launched, press your start-recording shortcut "
-        "(Ctrl+Alt+R by default): every key you press, every mouse "
-        "button you click and every cursor move is captured AND still "
-        "reaches your programs, so you can work normally while "
-        "recording. Press the stop shortcut (Ctrl+Alt+S) to save it "
-        "into the list on the Macros tab - five recordings fit there. "
-        "Click a recording to select it, rename or export it, and set "
-        "its own 'Repeat until stopped' switch. The play shortcut "
-        "(Ctrl+Alt+M) replays the recording selected there; Ctrl+1 to "
-        "Ctrl+5 replay by position in the list. Paused, nothing is "
-        "recorded and nothing is injected - your input is entirely "
-        "yours.",
-    "kb.keys.t": "Single keys versus key combos",
-    "kb.keys.b":
-        "A shortcut that includes Ctrl, Alt, Shift or Win is reserved "
-        "system-wide: only Snappy AI sees it. A bare single key (like "
-        "1 or 2) works in every program AND still types normally - the "
-        "trade-off is that typing that key mid-sentence also triggers "
-        "its action. If you would rather have classic behaviour, turn "
-        "on 'Single-key shortcuts swallow the key' on the Assistance "
-        "tab. Macros go one step further: while launched, the trigger "
-        "key is swallowed and the combo beside it is sent exactly "
-        "once.",
-
     "help.title": "Tuning Snappy AI in plain words",
     "help.sub":
         "Every setting by the name you see on its tab, in the order "
@@ -1021,7 +1041,7 @@ PROSE = {
         "and picks the best one: crisp edges, a decent size and close "
         "to your cursor win. Your colour, the never-click list and the "
         "memory of your last click can tilt the choice. The cursor is "
-        "then aimed at the middle of the item, not at the corner of "
+        "then placed at the middle of the item, not at the corner of "
         "its box.",
     "help.2.t": "Start here: mode and search distance",
     "help.2.b":
@@ -1032,8 +1052,10 @@ PROSE = {
         "item and Snappy AI clicks it for you. 'How far from the "
         "cursor to look' decides the search circle - raise it when the "
         "item you want is just out of reach, lower it when the wrong "
-        "neighbour wins. Holding Shift bypasses one click in both "
-        "modes.",
+        "neighbour wins. Holding the bypass key (Keyboard & Mouse tab, Shift by "
+        "default) lets one click through untouched in both modes, and which "
+        "button assistance listens to at all is yours to move on the "
+        "Keyboard & Mouse tab.",
     "help.3.t": "Nothing is found - or too much is",
     "help.3.b":
         "On the Handler tab, 'How faint an edge may be' and 'Minimum "
@@ -1070,7 +1092,7 @@ PROSE = {
     "help.6.t": "Clicking moving things",
     "help.6.b":
         "'Lead moving items' measures how fast the chosen item travels "
-        "and aims ahead by 'How far ahead to aim' milliseconds, so the "
+        "and moves ahead by 'How far ahead to lead' milliseconds, so the "
         "click lands on a scrolling list or a video seek bar instead "
         "of behind it. The lead caps at 80 pixels and switches itself "
         "off for still or turning items.",
@@ -1091,16 +1113,14 @@ PROSE = {
         "are reserved system-wide; bare single keys fire everywhere "
         "and still type. A macro turns one blocked key press into one "
         "whole combo. Recordings capture your real input - every key, "
-        "mouse click and cursor move - and replay it from the Macros "
-        "tab, each with its own play-once or repeat-until-stopped "
+        "mouse click and cursor move, or every controller button and "
+        "stick move - and replay it from the Macros tab, which keeps a "
+        "keyboard library and an independent controller library side by "
+        "side, each with its own play-once or repeat-until-stopped "
         "switch.",
-    "help.9.t": "Language",
+    "help.9.t": "Interface language",
     "help.9.b":
-        "The Language button - beside Export Config, and on the "
-        "sign-in and subscription windows too - switches the whole "
-        "interface at once, without restarting, and remembers your "
-        "choice. Languages that are still being translated are not "
-        "offered, so anything you can pick is complete.",
+        "The interface is English.",
     "help.10.t": "When it misbehaves, check in this order",
     "help.10.b":
         "1. Is it launched? Paused means nothing is intercepted - "
@@ -1128,46 +1148,42 @@ PROSE = {
     "login.failed": "%s sign-in did not complete - try again.",
     "login.unreachable": "Auth server unreachable: %s",
 
-    "gate.title": "%s - Subscription%s",
+    "gate.title": "%s - Subscription",
     "gate.prices": "2-day trial: 1.99\u20ac (one time)  -  subscription: "
                    "9.99\u20ac / month.\nActivation lands up to ~10 "
                    "minutes after payment; renewals re-enable this same "
                    "login automatically.",
     "gate.btn.monthly": "Monthly Subscription for 9.99\u20ac",
     "gate.btn.trial": "Trial Purchase for 1.99\u20ac",
-    # gate.btn.recheck / gate.btn.activate (the manual "Re-check now"
-    # and "I paid - activate now" buttons) are gone: the gate re-checks
-    # by itself every 30 seconds, so no key is registered for them in
-    # any locale.
+
+
+
+
     "gate.note": "The engine starts as soon as the subscription is "
                  "active - this window re-checks by itself every 30 "
                  "seconds. Closing it returns to sign-in.",
-    "gate.head.shared":
+    "gate.title.shared":
         "This account is in use on ANOTHER computer right now. Snappy "
         "AI stays off while the same Discord account runs it in two "
         "places at once - close the other session, then re-check. "
         "Sharing subscriptions is what keeps prices up; please don't.",
-    "gate.head.refunded":
+    "gate.title.refunded":
         "This purchase was refunded or charged back, so the entitlement "
         "was revoked. A new subscription on this Discord e-mail "
         "re-activates it.",
-    "gate.head.canceling":
+    "gate.title.canceling":
         "Your subscription is set to cancel - it stays active until "
         "%s, then this login locks again unless you renew.",
-    "gate.head.email_mismatch":
-        "The payment was made with a different e-mail than your Discord "
-        "account. Subscriptions only work on the Discord e-mail shown "
-        "below - re-subscribe with it, or contact support.",
-    "gate.head.expired":
+    "gate.title.expired":
         "Your subscription for this login expired - renew it on Stripe "
         "to continue.",
-    "gate.head.past_due":
+    "gate.title.past_due":
         "The last subscription payment failed - fix it on Stripe to "
         "re-enable this login.",
-    "gate.head.canceled":
+    "gate.title.canceled":
         "This subscription was canceled - start a new one on Stripe to "
         "continue.",
-    "gate.head.none":
+    "gate.title.none":
         "You are signed in, but this login has no active subscription. "
         "Pay with THIS Discord e-mail - a purchase on any other address "
         "cannot activate it.",
@@ -1179,9 +1195,9 @@ PROSE = {
                           "hand:\n%s",
     "gate.msg.no_link": "That payment link is not configured on this "
                         "build.",
-    # gate.msg.dispatching / gate.msg.no_dispatch / gate.msg.not_live
-    # belonged to the removed "I paid - activate now" flow; the 30 s
-    # auto re-check covers activation, so no locale registers them.
+
+
+
     "gate.msg.unreachable": "Auth server unreachable: %s",
     "gate.msg.session_gone": "Session gone - sign in again.",
     "gate.msg.active": "Subscription active - starting Snappy AI...",
@@ -1217,14 +1233,15 @@ PROSE = {
     "st.ini_over": "Applied, but config.ini overrides: %s",
     "st.saved_bad": "Saved, but invalid (old kept): %s",
     "st.saved": "Saved and applied.",
-    # v8.49: st.accent_set / st.exclude_set / st.loaded / st.loaded_none
-    # were deleted here. They died in the v8.43-8.44 picker rework (the
-    # chip strip and "Add to preferred colours" replaced "Set as accent" /
-    # "Load accent"), but stayed in PROSE - which is not harmless: PROSE is
-    # published into the ENGLISH catalog, and run_gui registers every
-    # English key as required, so one stale string here drops all 15 other
-    # locales below the 100% bar and silently hides every language from the
-    # chooser. i18n.diagnose() now reports that drift at start-up.
+    "st.defaults_restored": "Defaults restored.",
+
+
+
+
+
+
+
+
     "st.exported": "Settings exported to %s",
     "st.export_fail": "Export failed: %r",
     "st.select_rec": "Select a recording first.",
@@ -1281,27 +1298,153 @@ PROSE = {
     "login.not_configured": "The subscription file is not configured on "
                             "this build yet.",
     "login.no_provider": "No sign-in provider is built into this copy.",
+
+    "btn.launch": "Launch",
+    "btn.pause": "Pause",
+    "btn.logout": "Log out",
+    "btn.apply": "Apply",
+    "btn.restore": "Restore defaults",
+    "btn.import": "Import",
+    "btn.export": "Export",
+    "word.on": "On",
+    "word.off": "Off",
+    "col.accent": "My colour(s)",
+    "col.exclude": "Never-click colour(s)",
+    "col.chip_off": "%s is off - nothing is filtered by colour.",
+    "col.chip_desc": "rgb(%d, %d, %d) in %s - click the chip to remove it.",
+    "col.pick": "Pick from screen",
+    "col.suggest": "Suggest colours",
+    "col.add_pref": "Add to my colours",
+    "col.add_ref": "Add to never-click",
+    "mac.empty": "No recordings yet - press the record shortcut to capture "
+                 "one, or import a library.",
+    "mac.loop": "Repeat",
+    "mac.steps": "%d steps",
+    "st.running": "Running",
+    "st.standby": "Standby",
+    "st.follow": " - following for %ds",
+    "st.line": "Snapped %d clicks, passed %d through%s  |  %s theme",
+    "st.color_added": "Added rgb(%d, %d, %d) to %s.",
+    "st.color_already": "rgb(%d, %d, %d) is already in %s.",
+    "st.color_full": "%s is full - remove a colour before adding another.",
+    "st.color_removed": "Removed rgb(%d, %d, %d) from %s.",
+
+    "pad.head": "Controller",
+    "pad.note": "Controller bindings, one per action. Type a button name or "
+                "a combination ('start', 'rb+a', 'ls+rs'), or press the Press "
+                "button and then press the controller. A combination that "
+                "contains a shorter bound combination wins, so binding "
+                "'rb+a' never also fires 'a'. Leave a box empty to unbind "
+                "that action. These need 'Enable controller input' on the "
+                "Assistance tab, and they work while launched - paused means "
+                "the controller is entirely yours.",
+    "cap.btn": "Press",
+    "pad.cap_title": "Controller button",
+    "pad.cap_head": "Press the controller button - or hold several at once - "
+                    "then let go.",
+    "pad.cap_waiting": "Waiting for a controller button...",
+    "pad.cap_now": "Holding %s - release to set it.",
+    "pad.cap_nopad": "No controller detected. Plug one in and press a button, "
+                     "or close this and type the name into the box instead.",
+    "pad.cap_noxinput": "This PC has no XInput runtime, so no controller can "
+                        "be read here. Type the button name into the box "
+                        "instead, or install the DirectX end-user runtime.",
+    "pad.cap_timeout": "Nothing was pressed in time.",
+    "cap.cancel": "Cancel",
+    "pad.cap_names": "Names: a b x y - lb rb - lt rt - back start - ls rs - "
+                      "up down left right. Combine them with +.",
+    "cap.set": "%s is now %s. Press Apply to make it live.",
+    "cap.kept": "%s keeps its previous binding.",
+    "cap.none": "unbound",
+    "mac.pad_head": "Controller Macros",
+    "mac.pad_row": "Pad %d",
+    "tab.assist": "Assistance",
+    "tab.macros": "Macros",
+    "tab.handler": "Detection",
+    "tab.advanced": "Advanced",
+    "tab.experimental": "Experimental",
+    "tab.help": "Help",
+    "mac.keys_head": "Keyboard Macros",
+    "mac.recordings": "Recordings",
+    "mac.pad_recordings": "Controller Recordings",
+    "mac.sends": "sends",
+    "mac.rename": "Rename",
+    "mac.export": "Export",
+    "mac.import": "Import",
+    "mac.delete": "Delete",
+    "tab.keyboard": "Keyboard & Mouse",
+    "tab.controller": "Controller",
+    "tab.recordings": "Recordings",
+    "key.cap_title": "Keyboard shortcut",
+    "key.cap_head": "Press the key you want - or hold Ctrl / Alt / Shift and "
+                    "press a key for a combination.",
+    "key.cap_waiting": "Waiting for a key...",
+    "key.cap_mod_note": "Escape cancels. Release the key or combination to "
+                        "bind it. A modifier on its own works here - this is "
+                        "a hold, not a shortcut.",
+    "mouse.cap_title": "Choose a mouse button",
+    "mouse.cap_head": "Press the mouse button this role should use.",
+    "mouse.cap_current": "Now: %s",
+    "mouse.cap_timeout": "Nothing was pressed in time.",
+    "mouse.cap_note": "Escape cancels. mouse1 is the left button, mouse2 the "
+                      "right, mouse3 the middle (wheel) button, mouse4 and "
+                      "mouse5 the two side buttons. A role cannot be "
+                      "unbound - something has to click.",
+    "pad.cap_single_head": "Press ONE controller button.",
+    "head.mouse_roles": "Mouse buttons: what assistance listens to",
+    "head.key_shortcuts": "Keyboard shortcuts",
+    "head.pad_actions": "Controller actions",
+    "head.pad_roles": "Controller buttons: click, extra options, bypass",
+    "key.cap_holding": "Holding %s - now press the key.",
+    "key.cap_unbound": "'%s' cannot be bound here.",
+    "key.cap_invalid": "'%s' is not a valid shortcut.",
+    "key.cap_timeout": "Nothing was pressed in time.",
+    "key.cap_note": "Escape cancels. Mouse buttons cannot be bound - they are "
+                    "what the assistance works on.",
+    "key.cap_pad": "Escape cancels. Press a key for a keyboard combo, or a "
+                   "controller button for a controller combo (stored as "
+                   "'pad:a+b').",
+    "key.cap_pad_now": "Controller: holding %s - release to set it.",
+    "help.11.t": "Using a controller",
+    "help.11.b":
+        "Switch on 'Enable controller input' and a gamepad becomes a full "
+        "second input device, read through Windows' own XInput - no driver, no "
+        "extra software. The left stick steers the cursor, the right trigger "
+        "is the press that assistance snaps from, the left trigger is a right "
+        "click, and the right stick steers the view while that press is held, "
+        "so the snap, guide, follow and auto-click behaviour is the same code "
+        "a mouse user gets. Start launches and Back pauses out of the box; "
+        "every action can be re-bound on the Controller tab, including to a "
+        "combination, and a combination always wins over the shorter one it "
+        "contains - binding 'rb+a' never also fires 'a'. Keyboard recordings "
+        "save into the Recordings list and controller recordings into the "
+        "independent Controller Recordings list, and each side plays back "
+        "from its own list in order. Replaying controller output as a REAL "
+        "virtual gamepad needs the optional ViGEmBus driver plus its "
+        "ViGEmClient.dll next to the program; without them, output falls back "
+        "to the keyboard and mouse using the pad_emulate table in config.ini. "
+        "Which button clicks and which one carries the extra actions is on "
+        "this tab, together with the controller "
+        "bypass. Tuning lives in config.ini: pad_sensitivity, pad_deadzone, "
+        "pad_trigger_threshold, pad_poll_hz, pad_index, pad_rumble, "
+        "pad_drive and pad_output.",
 }
 
 i18n.publish("en", PROSE)
-# Descriptions: concrete keys for real settings, pattern keys for the
-# generated macro/play families (see desc_key).
+
+
 i18n.publish("en", {"desc." + k: META[k][1] for k in META
                     if desc_key(k) == "desc." + k})
-# Dropdown values are text the user reads, so they are catalog keys.
-# The four follow_boost steps are pure percentages - language-neutral -
-# so every locale receives them from English instead of carrying four
-# identical strings sixteen times.
+
+
+
+
 _VALS = {}
 for _k in META:
     if META[_k][2] == "map":
         for _d, _v in META[_k][3]:
             _VALS[val_key(_k, _v)] = _d
 i18n.publish("en", _VALS)
-for _c in i18n.codes():
-    for _k, _v in _VALS.items():
-        if _k.startswith("val.follow_boost."):
-            i18n.STRINGS[_c].setdefault(_k, _v)
 
 i18n.publish("en", {"lbl.macro_key": "Macro %d: press this key",
                      "lbl.macro_action": "Macro %d: sends this instead",
@@ -1313,12 +1456,12 @@ i18n.publish("en", {"lbl.macro_key": "Macro %d: press this key",
 
 DESC_DEFAULT = "Hover over a setting name to see what it does."
 
-# Clickable preset swatches on the Color Picker tab.
-# v8.45: FIFTEEN premade swatches - the owner's alignment grid is 15
-# boxes wide (the colour lists hold 15, the suggestions show 15, the
-# R,G,B row is 3 boxes of 5 units each), so the preset row joins it:
-# 15 swatches, one exact 15-box span.  Four new material tones fill
-# the gaps in the rainbow: lime, teal, indigo, brown.
+
+
+
+
+
+
 COLOR_PRESETS = [
     ("red", (229, 57, 53)), ("orange", (255, 152, 0)),
     ("yellow", (253, 216, 53)), ("lime", (192, 202, 51)),
@@ -1331,8 +1474,7 @@ COLOR_PRESETS = [
 ]
 
 
-def _surf_of(widget, fallback="#ffffff"):
-    """Live background colour of a widget's parent surface."""
+def _surf_of_global(widget, fallback="#ffffff"):
     try:
         parent = widget.nametowidget(widget.winfo_parent())
         return str(parent.cget("bg"))
@@ -1340,74 +1482,43 @@ def _surf_of(widget, fallback="#ffffff"):
         return fallback
 
 
-# ----------------------------------------------------------------------
-def _wrapping_note(parent, kit, pal, key, pady=(10, 2), padx=12):
-    """Full-width muted page note that wraps to whatever room it has.
+def _surf_of(widget, fallback="#ffffff"):
+    return _surf_of_global(widget, fallback)
 
-    A bare tk.Label sizes itself to its whole text: wider than the
-    window it gets centred and clipped on BOTH ends (the page notes
-    looked like that for as long as they were single-line labels).
-    This one fills the page row and re-fits its wraplength whenever the
-    page is resized, so the note always wraps inside the window - at
-    980 px and at the 640 px minimum alike.
+
+
+HELP_KEYS = [("help.%d.t" % n, "help.%d.b" % n) for n in range(1, 12)]
+
+# One width for every dropdown, so the Experimental tab lines up. The option
+# names are deliberately short: each setting's hover text and the Help tab
+# carry the explanation, and a per-setting width made the column ragged.
+CHOICE_WIDTH = 26
+
+PAD_CAPTURE_SECONDS = 8.0
+PAD_CAPTURE_W = 84
+
+
+def _scrollable(page, kit, pal, bar=False):
+    """A page whose content can be taller than the window.
+
+    The visible scrollbar is Help's alone (`bar=True`): on a settings tab a
+    permanent grey rail down the right edge is noise, and _fit_window sizes the
+    window so settings pages do not need to scroll at all. The canvas and the
+    wheel bindings stay either way, because on a short screen the window is
+    clamped and the content must still be reachable - hiding the rail must not
+    make settings unreachable.
     """
-    lb = tk.Label(parent, font=F_DESC, bg=pal["card"], fg=pal["muted"],
-                  text=i18n.L(key), justify="left", anchor="w")
-    kit.reg(lb, "card_muted")
-    R(lambda: lb.configure(text=i18n.L(key)) if _live(lb) else False)
-
-    def _fit(_event=None):
-        try:
-            w = lb.master.winfo_width()
-            if w > 60:
-                want = max(120, w - 2 * padx - 4)
-                if str(lb.cget("wraplength")) != str(want):
-                    lb.configure(wraplength=want)
-        except Exception:
-            pass
-
-    lb.pack(fill="x", padx=padx, pady=pady)
-    lb.bind("<Configure>", _fit)
-    lb.master.bind("<Configure>", _fit, add="+")
-    _fit()
-    return lb
-
-
-# ----------------------------------------------------------------------
-# Help tab (v8.38): the tuning guide
-#
-# Read-only prose, in the order a person actually tunes the product:
-# what a scan does, then the knobs grouped by the stage of the scan
-# they move.  Defaults and ranges quoted here are the enforced ones
-# (DEFAULT_CONFIG / Config._RANGES), so this page cannot drift from the
-# engine without somebody editing both.
-# ----------------------------------------------------------------------
-
-HELP_KEYS = [("help.%d.t" % i, "help.%d.b" % i) for i in range(1, 11)]
-KB_KEYS = [("kb.mode.t", "kb.mode.b"), ("kb.rec.t", "kb.rec.b"),
-           ("kb.keys.t", "kb.keys.b")]
-
-
-def _scrollable(page, kit, pal):
-    """(inner frame, wheel-binder) for a vertically scrollable page.
-
-    Every other tab fits the window; a page of tuning prose does not,
-    so Help gets a canvas plus a themed scrollbar.  The wheel is bound
-    per widget (Tk delivers the event to whatever is under the pointer,
-    which here is usually a label, not the canvas) and the step is a
-    fraction of the content height, so one notch moves the same distance
-    on Windows (<MouseWheel>, delta in +-120 multiples) and on X11
-    (Button-4 / Button-5)."""
     host = tk.Frame(page, bg=pal["card"])
     kit.reg(host, "card")
     host.pack(fill="both", expand=True)
 
-    bar = ttk.Scrollbar(host, orient="vertical")
     cvs = tk.Canvas(host, highlightthickness=0, takefocus=0, bd=0,
-                    bg=pal["card"], yscrollcommand=bar.set)
+                    bg=pal["card"])
     kit.reg(cvs, "canvas_card")
-    bar.configure(command=cvs.yview)
-    bar.pack(side="right", fill="y")
+    if bar:
+        scroll = ttk.Scrollbar(host, orient="vertical", command=cvs.yview)
+        cvs.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
     cvs.pack(side="left", fill="both", expand=True)
 
     inner = tk.Frame(cvs, bg=pal["card"])
@@ -1443,10 +1554,7 @@ def _scrollable(page, kit, pal):
 
 
 def _fill_help(page, kit, pal):
-    """Build the read-only Help tab: title, then HELP_KEYS as heading +
-    wrapping body pairs on a scrollable card.  Every label re-texts
-    live, so a language switch re-words the page in place."""
-    inner, bind_wheel = _scrollable(page, kit, pal)
+    inner, bind_wheel = _scrollable(page, kit, pal, bar=True)
     bodies = []
 
     def para(parent, key, font, role, pady, wheel=True):
@@ -1463,12 +1571,12 @@ def _fill_help(page, kit, pal):
         bodies.append(lb)
         return lb
 
-    head = tk.Label(inner, text=i18n.L("help.title"), font=F_H1,
+    title_lbl = tk.Label(inner, text=i18n.L("help.title"), font=F_H1,
                     bg=pal["card"], fg=pal["text"], anchor="w")
-    kit.reg(head, "card_text")
-    head.pack(fill="x", padx=14, pady=(12, 0))
-    bind_wheel(head)
-    R(lambda: head.configure(text=i18n.L("help.title")) if _live(head)
+    kit.reg(title_lbl, "card_text")
+    title_lbl.pack(fill="x", padx=14, pady=(12, 0))
+    bind_wheel(title_lbl)
+    R(lambda: title_lbl.configure(text=i18n.L("help.title")) if _live(title_lbl)
       else False)
 
     para(inner, "help.sub", F_DESC, "card_muted", (2, 4))
@@ -1484,9 +1592,6 @@ def _fill_help(page, kit, pal):
     para(inner, "help.tail", F_DESC, "card_muted", (14, 12))
 
     def _rewrap(_event=None):
-        """Wrap every paragraph to the width the canvas actually gave
-        the inner frame - the same fix _wrapping_note applies to the
-        tab notes, for a page that resizes with the window."""
         try:
             want = max(200, inner.winfo_width() - 32)
             for lb in bodies:
@@ -1500,15 +1605,586 @@ def _fill_help(page, kit, pal):
     return inner
 
 
-# ThemeKit: live theme, rounded buttons, role-based restyle
-# ----------------------------------------------------------------------
+
+
+
+KEY_CAPTURE_SECONDS = 12.0
+MOUSE_CAPTURE_SECONDS = 12.0
+
+_MOD_ORDER = ("ctrl", "alt", "shift", "win")
+
+_KEYSYM_TO_SPEC = {
+    "return": "enter", "kp_enter": "enter", "escape": "esc", "space": "space",
+    "tab": "tab", "kp_tab": "tab", "backspace": "backspace",
+    "insert": "insert", "delete": "delete", "home": "home", "end": "end",
+    "prior": "pgup", "next": "pgdn", "up": "up", "down": "down",
+    "left": "left", "right": "right", "comma": "comma", "period": "period",
+    "minus": "minus", "plus": "plus", "equal": "plus",
+}
+
+_CHAR_TO_SPEC = {" ": "space", ",": "comma", ".": "period", "-": "minus",
+                 "+": "plus"}
+
+_TK_MODS = {
+    "shift_l": "shift", "shift_r": "shift",
+    "control_l": "ctrl", "control_r": "ctrl",
+    "alt_l": "alt", "alt_r": "alt", "mode_switch": "alt",
+    "super_l": "win", "super_r": "win", "win_l": "win", "win_r": "win",
+    "meta_l": "win", "meta_r": "win",
+}
+
+
+def keysym_to_spec(keysym):
+    """A Tk keysym -> this project's hotkey spelling, or None if unbindable.
+
+    Kept beside the dialog rather than in hotkeys.py because it is a Tk
+    concern: hotkeys.py owns the grammar ("ctrl+alt+r"), this owns the
+    translation from whatever the windowing system called the key.
+    """
+    ks = str(keysym or "").strip()
+    low = ks.lower()
+    if low in _KEYSYM_TO_SPEC:
+        return _KEYSYM_TO_SPEC[low]
+    if len(low) > 1 and low[0] == "f" and low[1:].isdigit():
+        n = int(low[1:])
+        if 1 <= n <= 24:
+            return "f%d" % n
+    if len(ks) == 1:
+        c = ks.lower()
+        if ("a" <= c <= "z") or ("0" <= c <= "9") or c in _CHAR_TO_SPEC:
+            return _CHAR_TO_SPEC.get(c, c)
+    return None
+
+
+def _key_capture_dialog(parent, kit, app=None, initial="", allow_pad=False,
+                        allow_modifier=False):
+    """Ask for a key or combination and return its spec, or None on cancel.
+
+    Modifiers are tracked from the dialog's own KeyPress/KeyRelease events
+    rather than read out of event.state, whose modifier bits mean different
+    things on X11 and on Windows and would silently produce the wrong spec on
+    one of them.
+
+    `allow_pad` also listens for a controller combination and answers
+    "pad:<spec>", which is how a controller macro's OUTPUT can be either a key
+    combo or a controller combo from the same button.
+
+    `allow_modifier` accepts a modifier on its own, committed when it is
+    released. A shortcut needs a non-modifier key ("shift" alone is nothing to
+    register), but the assistance bypass is a HOLD, and "while Shift is down"
+    is the one spec people expect to be able to keep. Pressing a second key
+    still builds the combination, so the same dialog serves both.
+
+    Escape cancels rather than binding: a global Escape hotkey would break
+    every dialog in the program, including this one.
+    """
+    import gamepad
+    import hotkeys
+    win = tk.Toplevel(parent)
+    kit.attach(win)
+    kit.reg(win, "card")
+    pal = kit.pal
+    win.title(i18n.L("key.cap_title"))
+    win.configure(background=pal["card"])
+    win.resizable(False, False)
+    win.transient(parent)
+    try:
+        win.grab_set()
+    except tk.TclError:
+        pass
+
+    box = tk.Frame(win, bg=pal["card"])
+    kit.reg(box, "card")
+    box.pack(fill="both", expand=True, padx=18, pady=16)
+    head = tk.Label(box, text=i18n.L("key.cap_head"), font=F_BOLD,
+                    bg=pal["card"], fg=pal["text"], wraplength=380,
+                    justify="left", anchor="w")
+    kit.reg(head, "card_bold")
+    head.pack(fill="x", pady=(0, 8))
+    hint = tk.Label(box, text=i18n.L("key.cap_waiting"), font=F_DESC,
+                    bg=pal["card"], fg=pal["accent"], wraplength=380,
+                    justify="left", anchor="w")
+    kit.reg(hint, "card_muted")
+    hint.pack(fill="x", pady=(0, 10))
+    note = tk.Label(box, text=i18n.L(
+                        "key.cap_mod_note" if allow_modifier
+                        else ("key.cap_pad" if allow_pad else "key.cap_note")),
+                    font=F_DESC, bg=pal["card"], fg=pal["muted"],
+                    wraplength=380, justify="left", anchor="w")
+    kit.reg(note, "card_muted")
+    note.pack(fill="x", pady=(0, 12))
+
+    result = {"spec": None}
+    done = {"v": False}
+    held = set()
+    track = {"peak": 0, "seen": False, "index": None, "rescan": 0.0,
+             "sawkey": False}
+    aid = []
+
+    def finish(spec):
+        # Once, or not at all. Every sequence here is bound twice - on the
+        # window and app-wide, so that a dialog without the keyboard focus can
+        # still be driven - so one press reaches finish twice. Without this
+        # guard the second run recomputes from an already-emptied `held` and
+        # overwrites the answer: releasing ctrl+alt answered "ctrl".
+        if done["v"] or not _live(win):
+            return
+        done["v"] = True
+        result["spec"] = spec
+        for handle in aid:
+            try:
+                win.after_cancel(handle)
+            except (tk.TclError, ValueError):
+                pass
+        for seq in ("<KeyPress>", "<KeyRelease>", "<Escape>"):
+            try:
+                win.unbind_all(seq)
+            except tk.TclError:
+                pass
+        try:
+            win.destroy()
+        except tk.TclError:
+            pass
+
+    def on_press(event):
+        if not _live(win):
+            return
+        low = str(getattr(event, "keysym", "") or "").lower()
+        mod = _TK_MODS.get(low)
+        if mod is not None:
+            held.add(mod)
+            hint.configure(text=i18n.L(
+                "key.cap_holding",
+                "+".join(m for m in _MOD_ORDER if m in held)))
+            return
+        token = keysym_to_spec(getattr(event, "keysym", ""))
+        if token is not None:
+            track["sawkey"] = True
+        if token is None:
+            hint.configure(text=i18n.L("key.cap_unbound",
+                                       str(getattr(event, "keysym", "?"))))
+            return
+        spec = "+".join([m for m in _MOD_ORDER if m in held] + [token])
+        if hotkeys._parse_hotkey(spec) is None:
+            hint.configure(text=i18n.L("key.cap_invalid", spec))
+            return
+        finish(spec)
+
+    def on_release(event):
+        mod = _TK_MODS.get(str(getattr(event, "keysym", "") or "").lower())
+        if mod is None:
+            return
+        # Releasing a modifier with no key ever pressed commits the modifiers
+        # that were down - that is how "shift" alone becomes a bypass spec.
+        # Anything that reached on_press with a real key already finished.
+        if allow_modifier and not track["sawkey"] and held:
+            spec = "+".join(m for m in _MOD_ORDER if m in held)
+            held.discard(mod)
+            finish(spec)
+            return
+        held.discard(mod)
+
+    def poll_pad():
+        if not _live(win) or not allow_pad:
+            return
+        reader = getattr(app, "_pad_reader", None) if app is not None else None
+        now = time.time()
+        index = getattr(app, "_pad_index", None) if app is not None else None
+        if index is None and now >= track["rescan"]:
+            track["rescan"] = now + 0.5
+            index = gamepad.first_connected(-1, reader=reader)
+            track["index"] = index
+        if index is None:
+            index = track["index"]
+        state = None if index is None else gamepad.read(index, reader=reader)
+        if state is not None and state.connected:
+            buttons = int(state.buttons)
+            if buttons:
+                track["seen"] = True
+                track["peak"] |= buttons
+                hint.configure(text=i18n.L(
+                    "key.cap_pad_now",
+                    gamepad.format_buttons(track["peak"])))
+            elif track["seen"]:
+                finish("pad:" + gamepad.format_buttons(track["peak"]))
+                return
+        aid.append(win.after(16, poll_pad))
+
+    def expire():
+        if not _live(win):
+            return
+        hint.configure(text=i18n.L("key.cap_timeout"))
+        aid.append(win.after(1100, lambda: finish(None)))
+
+    cancel = kit.button(box, i18n.L("cap.cancel"), lambda: finish(None))
+    cancel.pack(anchor="e")
+    # bind_all, not just win.bind: a capture dialog that depends on really
+    # holding the keyboard focus fails silently on window managers that hand
+    # focus elsewhere, and the user sees a countdown that ignores their keys.
+    # The dialog is modal (grab_set) and short-lived, and finish() unbinds.
+    win.bind("<KeyPress>", on_press)
+    win.bind("<KeyRelease>", on_release)
+    win.bind("<Escape>", lambda _e: finish(None))
+    win.bind_all("<KeyPress>", on_press, add="+")
+    win.bind_all("<KeyRelease>", on_release, add="+")
+    win.bind_all("<Escape>", lambda _e: finish(None), add="+")
+    win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+    aid.append(win.after(int(KEY_CAPTURE_SECONDS * 1000), expire))
+    try:
+        win.update_idletasks()
+        win.deiconify()
+        win.lift()
+        win.focus_force()
+    except tk.TclError:
+        pass
+    if allow_pad:
+        poll_pad()
+    try:
+        parent.wait_window(win)
+    except tk.TclError:
+        pass
+    return result["spec"]
+
+
+def _pad_capture_dialog(parent, kit, app, initial="", single=False):
+    """Ask for a controller button and return its spec, or None on cancel.
+
+    Polls XInput directly instead of going through the engine, so a binding
+    can be captured before controller input is switched on, and while the
+    engine is paused. A combination is captured at its WIDEST - every button
+    that was down at any point in the press - and returned on release, so
+    "rb+a" needs no timing and cannot come back as just "a".
+
+    `single` captures exactly one button and answers on the press instead of
+    the release, for the two roles that must not be a combination: the
+    controller's click button and its extra-options button. Both are held and
+    released by the drive path, so a two-button spec there could never be
+    honoured and would leave the user steering with no way to click.
+    """
+    import gamepad
+    win = tk.Toplevel(parent)
+    kit.attach(win)
+    kit.reg(win, "card")
+    pal = kit.pal
+    win.title(i18n.L("pad.cap_title"))
+    win.configure(background=pal["card"])
+    win.resizable(False, False)
+    win.transient(parent)
+    try:
+        win.grab_set()
+    except tk.TclError:
+        pass
+
+    box = tk.Frame(win, bg=pal["card"])
+    kit.reg(box, "card")
+    box.pack(fill="both", expand=True, padx=18, pady=16)
+    head = tk.Label(box, text=i18n.L("pad.cap_single_head" if single
+                                     else "pad.cap_head"), font=F_BOLD,
+                    bg=pal["card"], fg=pal["text"], wraplength=380,
+                    justify="left", anchor="w")
+    kit.reg(head, "card_bold")
+    head.pack(fill="x", pady=(0, 8))
+    hint = tk.Label(box, text="", font=F_DESC, bg=pal["card"],
+                    fg=pal["accent"], wraplength=380, justify="left",
+                    anchor="w")
+    kit.reg(hint, "card_muted")
+    hint.pack(fill="x", pady=(0, 12))
+    names = tk.Label(box, text=i18n.L("pad.cap_names"), font=F_DESC,
+                     bg=pal["card"], fg=pal["muted"], wraplength=380,
+                     justify="left", anchor="w")
+    kit.reg(names, "card_muted")
+    names.pack(fill="x", pady=(0, 12))
+
+    result = {"spec": None}
+    done = {"v": False}
+    track = {"peak": 0, "seen": False, "index": None, "rescan": 0.0,
+             "deadline": time.time() + PAD_CAPTURE_SECONDS}
+    aid = []
+
+    def finish(spec):
+        if done["v"] or not _live(win):
+            return
+        done["v"] = True
+        result["spec"] = spec
+        for handle in aid:
+            try:
+                win.after_cancel(handle)
+            except (tk.TclError, ValueError):
+                pass
+        for seq in ("<Escape>", "<KeyPress>"):
+            try:
+                win.unbind(seq)
+                win.unbind_all(seq)
+            except tk.TclError:
+                pass
+        try:
+            win.destroy()
+        except tk.TclError:
+            pass
+
+    def on_key(event):
+        # See _mouse_capture_dialog: Escape has to survive a focus-less event.
+        if str(getattr(event, "keysym", "") or "").lower() in ("escape", "esc"):
+            finish(None)
+
+    def poll():
+        if not _live(win):
+            return
+        if time.time() > track["deadline"]:
+            hint.configure(text=i18n.L("pad.cap_timeout"))
+            aid.append(win.after(1100, lambda: finish(None)))
+            return
+        reader = getattr(app, "_pad_reader", None)
+        now = time.time()
+        index = getattr(app, "_pad_index", None)
+        if index is None and now >= track["rescan"]:
+            track["rescan"] = now + 0.5
+            index = gamepad.first_connected(-1, reader=reader)
+            track["index"] = index
+        if index is None:
+            index = track["index"]
+        state = None if index is None else gamepad.read(index, reader=reader)
+        if state is None or not state.connected:
+            if reader is None and not gamepad.available():
+                hint.configure(text=i18n.L("pad.cap_noxinput"))
+                aid.append(win.after(1500, lambda: finish(None)))
+                return
+            hint.configure(text=i18n.L("pad.cap_nopad"))
+            aid.append(win.after(120, poll))
+            return
+        buttons = int(state.buttons)
+        if single:
+            # The lowest button that is down, answered on the press: a single
+            # role has no combination to wait for.
+            if buttons:
+                finish(gamepad.PAD_BUTTONS[
+                    (buttons & -buttons).bit_length() - 1])
+                return
+            hint.configure(text=i18n.L("pad.cap_waiting"))
+        elif buttons:
+            track["seen"] = True
+            track["peak"] |= buttons
+            hint.configure(text=i18n.L(
+                "pad.cap_now", gamepad.format_buttons(track["peak"])))
+        elif track["seen"]:
+            finish(gamepad.format_buttons(track["peak"]))
+            return
+        else:
+            hint.configure(text=i18n.L("pad.cap_waiting"))
+        aid.append(win.after(16, poll))
+
+    cancel = kit.button(box, i18n.L("cap.cancel"), lambda: finish(None))
+    cancel.pack(anchor="e")
+    win.bind("<Escape>", lambda _e: finish(None))
+    win.bind("<KeyPress>", on_key)
+    win.bind_all("<Escape>", lambda _e: finish(None), add="+")
+    win.bind_all("<KeyPress>", on_key, add="+")
+    win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+    if initial:
+        track["deadline"] = time.time() + PAD_CAPTURE_SECONDS
+    poll()
+    try:
+        parent.wait_window(win)
+    except tk.TclError:
+        pass
+    return result["spec"]
+
+
+# Tk numbers mouse buttons 1=left, 2=middle, 3=right on every platform, while
+# Windows (and this program's config) numbers them mouse1=left, mouse2=right,
+# mouse3=middle. 4 and 5 are the two side buttons. One table, one translation.
+_TK_MOUSE_BUTTONS = {1: "mouse1", 2: "mouse3", 3: "mouse2",
+                     4: "mouse4", 5: "mouse5"}
+
+MOUSE_BUTTON_NAMES = tuple(_TK_MOUSE_BUTTONS[n]
+                           for n in sorted(_TK_MOUSE_BUTTONS))
+
+
+def _mouse_capture_dialog(parent, kit, initial=""):
+    """Ask which mouse button a role uses; return its name or None on cancel.
+
+    A real press rather than a dropdown, so the two mouse roles read exactly
+    like every other binding on the tab and cannot be set to a name the hook
+    does not understand. Escape cancels; the dialog cannot unbind, because a
+    role with no button would leave the program with no way to click.
+    """
+    win = tk.Toplevel(parent)
+    kit.attach(win)
+    kit.reg(win, "card")
+    pal = kit.pal
+    win.title(i18n.L("mouse.cap_title"))
+    win.configure(background=pal["card"])
+    win.resizable(False, False)
+    win.transient(parent)
+    try:
+        win.grab_set()
+    except tk.TclError:
+        pass
+
+    box = tk.Frame(win, bg=pal["card"])
+    kit.reg(box, "card")
+    box.pack(fill="both", expand=True, padx=18, pady=16)
+    head = tk.Label(box, text=i18n.L("mouse.cap_head"), font=F_BOLD,
+                    bg=pal["card"], fg=pal["text"], wraplength=380,
+                    justify="left", anchor="w")
+    kit.reg(head, "card_bold")
+    head.pack(fill="x", pady=(0, 8))
+    hint = tk.Label(box, text=i18n.L("mouse.cap_current",
+                                     initial or i18n.L("cap.none")),
+                    font=F_DESC, bg=pal["card"], fg=pal["accent"],
+                    wraplength=380, justify="left", anchor="w")
+    kit.reg(hint, "card_muted")
+    hint.pack(fill="x", pady=(0, 10))
+    note = tk.Label(box, text=i18n.L("mouse.cap_note"), font=F_DESC,
+                    bg=pal["card"], fg=pal["muted"], wraplength=380,
+                    justify="left", anchor="w")
+    kit.reg(note, "card_muted")
+    note.pack(fill="x", pady=(0, 12))
+
+    result = {"spec": None}
+    done = {"v": False}
+    seqs = []
+    aid = []
+
+    def finish(spec):
+        if done["v"] or not _live(win):
+            return
+        done["v"] = True
+        result["spec"] = spec
+        for handle in aid:
+            try:
+                win.after_cancel(handle)
+            except (tk.TclError, ValueError):
+                pass
+        for seq in seqs:
+            try:
+                win.unbind(seq)
+                win.unbind_all(seq)
+            except tk.TclError:
+                pass
+        try:
+            win.destroy()
+        except tk.TclError:
+            pass
+
+    for num in sorted(_TK_MOUSE_BUTTONS):
+        seq = "<ButtonPress-%d>" % num
+        seqs.append(seq)
+        win.bind(seq, lambda e, n=_TK_MOUSE_BUTTONS[num]: (e.widget.winfo_class() != "Button" and finish(n)))
+    def on_key(event):
+        # Escape cancels, from a KeyPress handler as well as the keysym-specific
+        # <Escape> pattern: an event that arrives without the window really
+        # holding the keyboard focus does not always reach a keysym pattern, and
+        # a dialog the user cannot cancel is a dialog they have to kill.
+        if str(getattr(event, "keysym", "") or "").lower() in ("escape", "esc"):
+            finish(None)
+
+    for seq in ("<Escape>", "<KeyPress>"):
+        seqs.append(seq)
+        win.bind(seq, on_key if seq == "<KeyPress>"
+                 else (lambda _e: finish(None)))
+        # bind_all too, for the reason the key dialog gives: a dialog that
+        # depends on really holding the keyboard focus cannot be cancelled at
+        # all on window managers that hand focus elsewhere.
+        win.bind_all(seq, on_key if seq == "<KeyPress>"
+                     else (lambda _e: finish(None)), add="+")
+
+    def expire():
+        # Same escape hatch the other two dialogs have: a dialog that only a
+        # mouse press can close is a trap for anyone who opened it by accident
+        # or whose button is stuck.
+        if done["v"] or not _live(win):
+            return
+        hint.configure(text=i18n.L("mouse.cap_timeout"))
+        aid.append(win.after(1100, lambda: finish(None)))
+
+    cancel = kit.button(box, i18n.L("cap.cancel"), lambda: finish(None))
+    cancel.pack(anchor="e")
+    win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+    aid.append(win.after(int(MOUSE_CAPTURE_SECONDS * 1000), expire))
+    try:
+        parent.wait_window(win)
+    except tk.TclError:
+        pass
+    return result["spec"]
+
+
+CAPTURE_KINDS = ("key", "keymod", "pad", "padsingle", "padkey", "mouse")
+
+
+def capture_button(parent, kit, root, app, key, var, kind, status_msg, R):
+    """The "Press" button beside a binding field.
+
+    The kind decides what is listened to: "key" the keyboard, "keymod" the
+    keyboard including a lone modifier, "pad" a controller combination,
+    "padsingle" exactly one controller button, "padkey" both devices - the
+    last is how a controller macro's OUTPUT can be either a key combo or a
+    controller combo - and "mouse" one of the five mouse buttons. One
+    implementation, so keyboard shortcuts, macros, controller bindings, the
+    mouse roles and the bypass all capture the same way and report the same
+    status lines.
+
+    Returns the button; the caller places it (gridded in a settings row,
+    packed in a macro row).
+    """
+    def _capture(k=key, v=var, kd=kind):
+        if kd == "pad":
+            spec = _pad_capture_dialog(root, kit, app, v.get())
+        elif kd == "padsingle":
+            spec = _pad_capture_dialog(root, kit, app, v.get(), single=True)
+        elif kd == "mouse":
+            spec = _mouse_capture_dialog(root, kit, v.get())
+        else:
+            spec = _key_capture_dialog(root, kit, app, v.get(),
+                                       allow_pad=(kd == "padkey"),
+                                       allow_modifier=(kd == "keymod"))
+        label = tr_label(k)
+        if spec is None:
+            status_msg(i18n.L("cap.kept", label))
+            return
+        v.set(spec)
+        status_msg(i18n.L("cap.set", label, spec or i18n.L("cap.none")))
+
+    entry_h = getattr(kit, "_entry_h", None)
+    if entry_h is None:
+        try:
+            probe = tk.Entry(parent, font=F_ENTRY, relief="solid",
+                             borderwidth=1, highlightthickness=1)
+            probe.update_idletasks()
+            entry_h = max(1, int(probe.winfo_reqheight()))
+            probe.destroy()
+        except Exception:
+            entry_h = kit.BTN_H
+        kit._entry_h = entry_h
+    btn = kit.button(parent, i18n.L("cap.btn"), _capture,
+                     fixed_w=PAD_CAPTURE_W, height=entry_h)
+    R(lambda b=btn: kit.set_text(b, i18n.L("cap.btn")) if _live(b) else False)
+    return btn
+
+
+def _widget_class(root, widget):
+    """Tk class of an event's widget, whether Tkinter knows it or not.
+
+    `event.widget` is a WIDGET for anything Tkinter created, but a bare PATH
+    STRING for the internals Tk builds itself - a ttk.Combobox popdown, its
+    listbox, scrollbar arrows. Those have no Python proxy, so calling
+    `.winfo_class()` on them raised AttributeError on every focus change
+    inside a dropdown, once per event, straight into the console.
+    """
+    try:
+        if isinstance(widget, str):
+            return str(root.tk.call("winfo", "class", widget))
+        return widget.winfo_class()
+    except Exception:
+        return ""
+
 
 class ThemeKit:
-    # v8.45: the pill height of a normal (non-big) rounded button, as a
-    # class constant - the Colors tab's right column is pixel
-    # arithmetic (its showcase height solves so the suggestion boxes
-    # end level with the hue slider), so the layout may not guess the
-    # button height, it has to KNOW it.
+
+
+
+
+
     BTN_H = 31
 
     def __init__(self, cfg):
@@ -1518,7 +2194,7 @@ class ThemeKit:
         self.repaints = []
         self._img_cache = {}
 
-    # -- palette / windows -------------------------------------------
+
     def attach(self, root):
         self.roots.append(root)
         return root
@@ -1556,19 +2232,19 @@ class ThemeKit:
                 self._walk(root)
             except tk.TclError:
                 pass
-        # v8.46: iterate a COPY - repaint callbacks may add or remove
-        # entries while they run (the Macros recorder rows rebuild
-        # themselves and prune their own switches' paint callbacks).
+
+
+
         for fn in list(self.repaints):
             try:
                 fn()
-            except tk.TclError:
+            except Exception:
                 pass
 
     def _walk(self, w):
-        # v8.46: destroyed widgets are skipped - the recorder rows are
-        # rebuilt dynamically, and configuring a dead widget would
-        # abort the whole theme walk.
+
+
+
         try:
             if not w.winfo_exists():
                 return
@@ -1584,6 +2260,8 @@ class ThemeKit:
         pal = self.pal
         if role == "bg":
             w.configure(bg=pal["bg"])
+        elif role == "tab_bg":
+            w.configure(bg=pal["tab_bg"])
         elif role == "bg_text":
             w.configure(bg=pal["bg"], fg=pal["text"])
         elif role == "canvas_bg":
@@ -1597,11 +2275,11 @@ class ThemeKit:
         elif role == "card_bold":
             w.configure(bg=pal["card"], fg=pal["text"])
         elif role == "entry":
-            # v8.42: readonlybackground too, so a themed read-only
-            # Entry takes its colour from that option, not from bg.
-            # (v8.43 turned the Current RGB Value row into colour
-            # boxes, but the option stays correct for any read-only
-            # field the product grows later.)
+
+
+
+
+
             w.configure(bg=pal["entry"], fg=pal["text"],
                         insertbackground=pal["text"],
                         readonlybackground=pal["entry"],
@@ -1618,22 +2296,22 @@ class ThemeKit:
         elif role == "desc":
             w.configure(bg=pal["desc_bg"], fg=pal["muted"])
         elif role == "desc_frame":
-            # v8.39: the row that carries the description bar AND the
-            # Apply button; bg-only, like status_frame.
+
+
             w.configure(bg=pal["desc_bg"])
         elif role == "status":
             w.configure(bg=pal["status_bg"], fg=pal["muted"])
         elif role == "status_frame":
-            # v8.34: the status bar became a Frame holding two Labels, so
-            # it needs a bg-only role - "status" also sets fg, which a
-            # Frame has no option for and would raise inside the theme
-            # walk (aborting the restyle of every widget after it).
+
+
+
+
             w.configure(bg=pal["status_bg"])
         elif role == "canvas_card":
             w.configure(bg=pal["card"])
         elif role == "panel":
-            # v8.46: a bordered panel on the card - the Macros tab's
-            # recordings box (bg + border only; a Frame has no fg).
+
+
             w.configure(bg=pal["card"],
                         highlightbackground=pal["entry_bd"])
         elif role == "hl":
@@ -1662,7 +2340,7 @@ class ThemeKit:
             return pal["amber"], "#ffffff"
         return pal["light_bg"], pal["text"]
 
-    # -- rounded corner images ----------------------------------------
+
     def rounded(self, width, height, fill_hex, radius=7):
         key = (width, height, fill_hex, radius)
         if key not in self._img_cache:
@@ -1674,18 +2352,10 @@ class ThemeKit:
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             self._img_cache[key] = buf.getvalue()
-        return tk.PhotoImage(data=self._img_cache[key])
+        return tk.PhotoImage(data=base64.b64encode(self._img_cache[key]).decode("ascii"))
 
     def button(self, parent, text, command, kind="plain", big=False,
-               surface="card", fixed_w=None):
-        """Rounded, flash-free, focus-ring-free button.
-
-        v8.45: `fixed_w` pins the pill to an exact pixel width no
-        matter what the label says - the Colors tab's four screen/add
-        buttons are all one size and together span exactly the
-        fifteen-box grid, so their width is layout arithmetic, not a
-        text measurement.  The pin survives live language switching
-        (set_text re-draws at the same width)."""
+               surface="card", fixed_w=None, height=None):
         role = {"plain": "btn", "accent": "btn_accent",
                 "green": "btn_green", "amber": "btn_amber"}[kind]
         bg, fg = self._btn_colors(role)
@@ -1700,7 +2370,7 @@ class ThemeKit:
         f = tkfont.Font(font=(F_BTN_BIG if big else F_BTN))
         w = int(fixed_w) if fixed_w else \
             int(f.measure(text)) + (44 if big else 30)
-        h = 40 if big else self.BTN_H
+        h = int(height) if height else (40 if big else self.BTN_H)
         b._rmeta = (text, big, surface, w, h, role)
         if fixed_w:
             b._fixed_w = int(fixed_w)
@@ -1715,16 +2385,6 @@ class ThemeKit:
         return self.reg(b, role)
 
     def _draw_pill(self, cvs, right, track_hex, knob_hex):
-        """Paint one pill track (SW_W x SW_H) with its knob on the left
-        (`right` false) or on the RIGHT (`right` true).
-
-        Shared by the Light/Dark switch and the Assistance tab's on/off
-        switches, so the two control families can never drift apart.
-        Keeps a reference to the rounded-track PhotoImage on the canvas:
-        Tk frees an image nothing holds, which would blank the track on
-        the next idle cycle.  Without Pillow the track degrades to a
-        plain rectangle - the state is still legible, only the corners
-        are square."""
         cvs.delete("all")
         if HAVE_PIL:
             img = self.rounded(SW_W, SW_H, track_hex, SW_RADIUS)
@@ -1738,11 +2398,6 @@ class ThemeKit:
                         fill=knob_hex, outline="")
 
     def set_text(self, b, text):
-        """Swap a rounded button's label and resize its pill to fit.
-
-        The one place that knows a button's measured geometry (_rmeta),
-        so live language switching and the Colors tab's Set/Load
-        retitling share it instead of each re-measuring."""
         meta = getattr(b, "_rmeta", None)
         b.configure(text=text)
         if meta is None:
@@ -1750,8 +2405,8 @@ class ThemeKit:
         _t, big, surface, _w, h, role = meta
         bg, _fg = self._btn_colors(role)
         f = tkfont.Font(font=(F_BTN_BIG if big else F_BTN))
-        # v8.45: a fixed-width button keeps its width in every
-        # language - only the label (and its pill image) is swapped.
+
+
         w = getattr(b, "_fixed_w", None) or \
             int(f.measure(text)) + (44 if big else 30)
         if HAVE_PIL:
@@ -1764,7 +2419,6 @@ class ThemeKit:
         b._rmeta = (text, big, surface, w, h, role)
 
     def switch_widget(self, parent, on_toggle):
-        """Light [pill switch] Dark control; grey rounded track."""
         pal = self.pal
         f = tk.Frame(parent, bg=pal["card"])
         self.reg(f, "card")
@@ -1797,27 +2451,6 @@ class ThemeKit:
         return f
 
     def bool_switch(self, parent, var, word=True):
-        """An on/off pill switch bound to a tk.BooleanVar.
-
-        Replaces the Assistance tab's "On" checkboxes with the same
-        control the header uses for Light/Dark:
-
-          * knob ON THE RIGHT  = the setting is ON, and the track fills
-            with pal["switch_on"] - the red sampled from the logo;
-          * knob on the left   = off, on the neutral light_bg track.
-
-        `var` stays the single source of truth, so the switch follows
-        refresh_fields(), a config reload, an import and Restore
-        Defaults exactly like the checkbox did: it repaints from a trace
-        on the var, and a click only ever WRITES the var - which is what
-        fires the caller's dirty trace and makes Apply appear.
-
-        `word` puts a small On/Off label beside the pill.  The state is
-        already colour-coded, and colour alone is not an accessible
-        encoding in a product whose users have low vision, so the word
-        stays on by default; pass word=False for the pill alone.
-        Returns the frame to grid/pack (the pill is always its
-        right-most child, so a column of switches lines up)."""
         pal = self.pal
         f = tk.Frame(parent, bg=pal["card"])
         self.reg(f, "card")
@@ -1830,7 +2463,7 @@ class ThemeKit:
             lbl.pack(side="left", padx=(0, 6))
 
         cvs = tk.Canvas(f, width=SW_W, height=SW_H, highlightthickness=0,
-                        takefocus=0, bd=0, bg=pal["card"], cursor="hand2")
+                        takefocus=1, bd=0, bg=pal["card"], cursor="hand2")
         self.reg(cvs, "canvas_card")
         cvs.pack(side="left")
 
@@ -1839,11 +2472,11 @@ class ThemeKit:
                 if not cvs.winfo_exists():
                     return
             except tk.TclError:
-                return                  # window closed mid-repaint
+                return
             try:
                 on = bool(var.get())
             except (tk.TclError, ValueError):
-                on = False              # a bad hand-edited value reads off
+                on = False
             pal = self.pal
             self._draw_pill(
                 cvs, on,
@@ -1868,19 +2501,18 @@ class ThemeKit:
 
         for w in ([cvs, lbl] if lbl is not None else [cvs]):
             w.bind("<Button-1>", toggle)
-        # space/return for anyone who tabs to the pill (it is takefocus=0
-        # like every other control here, so this only fires once a
-        # future build makes it focusable - harmless until then)
+
+
+
         cvs.bind("<space>", toggle)
         cvs.bind("<Return>", toggle)
 
-        var.trace_add("write", paint)   # programmatic sets repaint too
-        self.repaint(paint)             # ...and so does a theme switch
+        var.trace_add("write", paint)
+        self.repaint(paint)
         paint()
         return f
 
     def titlebar_hook(self, root):
-        """Re-colour the window title bar on every theme change."""
         def _apply():
             try:
                 if not root.winfo_exists():
@@ -1893,55 +2525,44 @@ class ThemeKit:
                 pass
         self.repaint(_apply)
         try:
-            root.update_idletasks()   # window must exist for DWM
+            root.update_idletasks()
         except Exception:
             pass
         _apply()
         try:
-            root.after(150, _apply)   # and again once fully mapped
+            try:
+                root.after(150, _apply)
+            except Exception:
+                pass
         except Exception:
             pass
 
     def defocus_hook(self, root):
-        """Clicking a button must not leave a focus ring behind."""
         def _defocus(event):
             try:
-                if event.widget.winfo_class() in ("Button", "Checkbutton"):
-                    event.widget.winfo_toplevel().focus_set()
+                if _widget_class(root, event.widget) in ("Button",
+                                                         "Checkbutton"):
+                    root.winfo_toplevel().focus_set()
             except Exception:
                 pass
         root.bind("<ButtonRelease-1>", _defocus)
 
 
-# ----------------------------------------------------------------------
-# sign-in
-# ----------------------------------------------------------------------
+
+
+
 
 def _clipboard_put(root, text):
-    """Best-effort clipboard write; True when the text took."""
     try:
         root.clipboard_clear()
         root.clipboard_append(text)
-        root.update()                  # survives the window closing
+        root.update()
         return True
     except Exception:
         return False
 
 
 def registration_line(identity, ent):
-    """One line: who is signed in, and what their licence is doing.
-
-    v8.34: this was two lines in the header card (the e-mail, then the
-    licence status). Moving it to the right end of the status bar keeps
-    both facts a support message needs on screen, in the same face as
-    the counters beside it, and stops the header carrying any text long
-    enough to wrap - which is what made the 74 px card tight in the
-    first place.
-
-    Defensive on purpose: this runs inside a Tk `after` callback fed by
-    online.me(), and me() legitimately returns (None, None) when the
-    session died server-side. An exception here would surface as a
-    callback traceback on every 30-minute re-check."""
     try:
         who = online.identity_label(identity) if identity else ""
     except Exception:
@@ -1952,25 +2573,15 @@ def registration_line(identity, ent):
 
 
 def _language_window(cfg, kit, parent):
-    """Chooser for the live interface language (v8.39).
-
-    One row per locale: native name (the one a person recognises as
-    theirs), English name, and how much of the interface that locale
-    actually carries - computed, not claimed.  Clicking a row switches
-    the WHOLE application at once, this window included, because every
-    visible string re-registers itself through R(); nothing restarts.
-    The window stays open on purpose: picking a language you cannot
-    yet read is exactly when you want to see the result before you
-    close anything.  The choice persists as config "language"."""
     pal = kit.pal
     win = tk.Toplevel(parent)
     kit.attach(win)
     kit.reg(win, "card")
-    win.title("%s - %s" % (APP_NAME, i18n.L("lang.title")))
+    win.title("%s - Language" % APP_NAME)
     win.configure(background=pal["card"])
     win.resizable(False, False)
     win.transient(parent)
-    W, H = 480, 560
+    W, H = 480, 200
     win.update_idletasks()
     sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
     win.geometry("%dx%d+%d+%d" % (W, H, max(0, (sw - W) // 2),
@@ -1981,106 +2592,22 @@ def _language_window(cfg, kit, parent):
         pass
     kit.defocus_hook(win)
     kit.titlebar_hook(win)
-
-    head = tk.Label(win, text=i18n.L("lang.title"), font=F_H1,
+    title_lbl = tk.Label(win, text="Language", font=F_H1,
                     bg=pal["card"], fg=pal["text"])
-    kit.reg(head, "card_text")
-    head.pack(pady=(14, 2))
-    cur = tk.StringVar(value=i18n.L("lang.current",
-                                    i18n.native_name(i18n.current())))
-    curl = tk.Label(win, textvariable=cur, font=F_DESC, bg=pal["card"],
-                    fg=pal["muted"])
-    kit.reg(curl, "card_muted")
-    curl.pack(pady=(0, 8))
-
-    codes = i18n.offered_codes()
-    progress = i18n.in_progress()
-
-    def row_text(code):
-        return "%s   %s   -   %s" % (
-            i18n.native_name(code), i18n.english_name(code),
-            i18n.L("lang.coverage",
-                   int(round(100 * i18n.coverage(code)))))
-
-    lb = tk.Listbox(win, font=F_BASE, activestyle="none",
-                    selectmode="single", exportselection=False,
-                    takefocus=0, bg=pal["entry"], fg=pal["text"],
-                    highlightthickness=1,
-                    highlightbackground=pal["entry_bd"])
-    kit.reg(lb, "listbox")
-    for c in codes:
-        lb.insert("end", row_text(c))
-    here = codes.index(i18n.current())
-    lb.selection_set(here)
-    lb.see(here)
-    lb.pack(fill="both", expand=True, padx=16, pady=(0, 8))
-
-    if progress:
-        prog = tk.Label(win, text=i18n.L(
-            "lang.progress",
-            ", ".join(i18n.native_name(c) for c, _f in progress)),
-            font=F_DESC, bg=pal["card"], fg=pal["muted"],
-            wraplength=430, justify="center")
-        kit.reg(prog, "card_muted")
-        prog.pack(pady=(0, 6))
-        R(lambda: prog.configure(text=i18n.L(
-            "lang.progress",
-            ", ".join(i18n.native_name(c) for c, _f in progress)))
-          if _live(prog) else False)
-
-    note = tk.Label(win, text=i18n.L("lang.prompt"), font=F_DESC,
-                    bg=pal["card"], fg=pal["muted"], wraplength=430,
-                    justify="center")
+    kit.reg(title_lbl, "card_text")
+    title_lbl.pack(pady=(14, 2))
+    note = tk.Label(win, text="The interface is English.",
+                    font=F_DESC, bg=pal["card"], fg=pal["muted"],
+                    wraplength=430, justify="center")
     kit.reg(note, "card_muted")
-    note.pack(pady=(0, 10))
-
-    close_btn = kit.button(win, i18n.L("lang.close"), win.destroy)
+    note.pack(pady=(10, 10))
+    close_btn = kit.button(win, "Close", win.destroy)
     close_btn.pack(pady=(0, 14))
-
-    def reword_self():
-        if not _live(win):
-            return False
-        win.title("%s - %s" % (APP_NAME, i18n.L("lang.title")))
-        head.configure(text=i18n.L("lang.title"))
-        note.configure(text=i18n.L("lang.prompt"))
-        cur.set(i18n.L("lang.current",
-                        i18n.native_name(i18n.current())))
-        keep = codes.index(i18n.current())
-        lb.delete(0, "end")
-        for c in codes:
-            lb.insert("end", row_text(c))
-        lb.selection_set(keep)
-        lb.see(keep)
-        kit.set_text(close_btn, i18n.L("lang.close"))
-        return True
-
-    R(reword_self)
-
-    def choose(_event=None):
-        sel = lb.curselection()
-        if not sel:
-            return
-        code = codes[sel[0]]
-        if code == i18n.current():
-            return
-        i18n.set_language(code)
-        cfg.set("language", code, save=True)
-        apply_language()          # rewords the main window and us
-
-    lb.bind("<<ListboxSelect>>", choose)
     win.protocol("WM_DELETE_WINDOW", win.destroy)
     return win
 
 
 def _login_window(cfg, kit):
-    """Sign-in: one Discord button and nothing else.
-
-    No usernames, no passwords, no local accounts: the browser
-    authenticates against Discord, the app exchanges the code itself
-    (loopback hop, native-app OAuth), and the subscription is bound to
-    that Discord identity - including the e-mail Stripe must charge.
-    Returns the identity dict, or None when the window was closed.
-    """
     pal = kit.pal
     result = {}
     W, H = 560, 640
@@ -2096,7 +2623,7 @@ def _login_window(cfg, kit):
     root.geometry("%dx%d+%d+%d" % (W, H, max(0, (sw - W) // 2),
                                    max(0, (sh - H) // 3)))
     try:
-        root.iconbitmap(logo.ico_path())   # real .ico: title bar + taskbar
+        root.iconbitmap(logo.ico_path())
     except Exception:
         try:
             root.iconphoto(True, logo.photoimage(tk, 64))
@@ -2111,12 +2638,7 @@ def _login_window(cfg, kit):
     kit.switch_widget(top, kit.toggle).pack(side="right")
 
     def _surf_of(widget):
-        """Live background colour of the widget's parent surface."""
-        try:
-            parent = widget.nametowidget(widget.winfo_parent())
-            return str(parent.cget("bg"))
-        except Exception:
-            return pal["card"]
+        return _surf_of_global(widget, pal["card"])
 
     try:
         lb = tk.Label(root, bg=pal["card"])
@@ -2139,10 +2661,10 @@ def _login_window(cfg, kit):
                  fg=pal["text"])
     kit.reg(t, "card_text")
     t.pack()
-    # The sub line wraps inside the window (wraplength 460 leaves 50 px
-    # of margin on each side of the 560 px frame). Without it the text
-    # ran off the window edge as one long line - and longer translations
-    # did the same. Centre-justified like the note below it.
+
+
+
+
     sub = tk.Label(root, font=F_DESC, bg=pal["card"], fg=pal["muted"],
                    text=i18n.L("login.sub"),
                    wraplength=460, justify="center")
@@ -2157,7 +2679,7 @@ def _login_window(cfg, kit):
     msg_kind = ["err"]
 
     def _remsg():
-        # keep the message colour themed across light/dark switches
+
         msg_lbl.configure(fg=(pal["green"] if msg_kind[0] == "ok"
                               else pal["accent"]))
     kit.repaint(_remsg)
@@ -2175,16 +2697,21 @@ def _login_window(cfg, kit):
     waiting = {"on": False}
 
     def done(identity, err, label):
-        waiting["on"] = False
-        for b in btns.values():
-            b.configure(state="normal")
-        if identity:
-            result["identity"] = identity
-            set_msg(i18n.L("login.signedin",
-                         online.identity_label(identity)), ok=True)
-            root.after(350, root.destroy)
-            return
-        set_msg(err or i18n.L("login.failed", label))
+        try:
+            if not _live(root):
+                return
+            waiting["on"] = False
+            for b in btns.values():
+                b.configure(state="normal")
+            if identity:
+                result["identity"] = identity
+                set_msg(i18n.L("login.signedin",
+                             online.identity_label(identity)), ok=True)
+                root.after(350, root.destroy)
+                return
+            set_msg(err or i18n.L("login.failed", label))
+        except tk.TclError:
+            pass
 
     def choose(provider, label):
         if waiting["on"]:
@@ -2203,16 +2730,19 @@ def _login_window(cfg, kit):
                                                            provider)
             except online.OnlineError as exc:
                 identity, msg = None, i18n.L("login.unreachable", exc)
-            root.after(0, lambda: done(identity, msg, label))
+            try:
+                root.after(0, lambda: done(identity, msg, label))
+            except Exception:
+                pass
 
         threading.Thread(target=worker, daemon=True,
                          name="login-%s" % provider).start()
 
-    # Provider pills: the brand mark on the left, the label centred -
-    # like every other "Sign in with ..." button out there. Composited
-    # with PIL so the pill keeps the theme colours and the mark stays
-    # a crisp PNG; without Pillow (or in an old partial copy without
-    # provider_logos.py) the buttons degrade to plain text.
+
+
+
+
+
     def provider_pill(pid, w, h, bg, dark):
         img = _PILImage.new("RGBA", (w, h), (0, 0, 0, 0))
         dr = _PILDraw.Draw(img)
@@ -2220,8 +2750,7 @@ def _login_window(cfg, kit):
                              fill=hex2rgb(bg) + (255,))
         name = pid + "_dark" if (dark and pid == "github") else pid
         mark = _PILImage.open(io.BytesIO(base64.b64decode(
-            provider_logos.PROVIDER_LOGO_B64[name])))
-        th = 20 if pid == "discord" else 24     # optical, not metric
+            logo.PROVIDER_LOGO_B64.get(name, logo.PROVIDER_LOGO_B64.get("discord", "")))))
         if mark.height != th:
             mark = mark.resize(
                 (max(1, int(round(mark.width * th / mark.height))), th),
@@ -2229,7 +2758,7 @@ def _login_window(cfg, kit):
         img.paste(mark, (16, (h - th) // 2), mark)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        return tk.PhotoImage(data=buf.getvalue())
+        return tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
 
     def paint_provider_buttons():
         dark = kit.current() == "dark"
@@ -2237,7 +2766,7 @@ def _login_window(cfg, kit):
         for pid, b in btns.items():
             b.configure(fg=fg, bg=pal["card"], activebackground=pal["card"],
                         activeforeground=fg)
-            if provider_logos is None or not HAVE_PIL:
+            if not HAVE_PIL:
                 continue
             text, w, h = b._pmeta
             try:
@@ -2249,10 +2778,10 @@ def _login_window(cfg, kit):
 
     for pid, label in online.PROVIDERS:
         if not online.PROVIDER_TABLE[pid]["client_id"]:
-            continue          # not registered for this build: no dead button
+            continue
         text = i18n.L("login.provider", label)
         f = tkfont.Font(font=F_BTN_BIG)
-        w = int(f.measure(text)) + 96        # logo gutter + padding
+        w = int(f.measure(text)) + 96
         h = 40
         b = tk.Button(body, text=text, relief="flat", bd=0, font=F_BTN_BIG,
                       highlightthickness=0, takefocus=0, cursor="hand2",
@@ -2261,16 +2790,16 @@ def _login_window(cfg, kit):
                       command=lambda p=pid, l=label: choose(p, l))
         b._pmeta = (text, w, h)
         btns[pid] = b
-    # one shared width: sign-in pillars look like a column, not a ragbag
+
     wmax = max([b._pmeta[1] for b in btns.values()] or [0])
     for b in btns.values():
         text, _w, h = b._pmeta
         b._pmeta = (text, wmax, h)
         b.pack(fill="x", padx=60, pady=(0, 8))
     if not btns:
-        # v8.49: catalogued. This was hard-coded English while
-        # login.no_provider sat translated in all 16 locales unused - and
-        # the two wordings had drifted apart.
+
+
+
         set_msg(i18n.L("login.no_provider"))
     paint_provider_buttons()
     kit.repaint(paint_provider_buttons)
@@ -2286,20 +2815,6 @@ def _login_window(cfg, kit):
     R(lambda: note.configure(text=i18n.L("login.note")) if _live(note)
       else False)
 
-    # v8.40: the language chooser is reachable before sign-in too.
-    lang_row = tk.Frame(body, bg=pal["card"])
-    kit.reg(lang_row, "card")
-    lang_row.pack(pady=(0, 12))
-    _b_lg = kit.button(lang_row, i18n.L(
-        "btn.language", i18n.native_name(i18n.current())),
-        lambda: _language_window(cfg, kit, root))
-    _b_lg.pack(side="left")
-    R(lambda: kit.set_text(_b_lg, i18n.L(
-        "btn.language", i18n.native_name(i18n.current())))
-      if _live(_b_lg) else False)
-
-    # v8.40: translations are longer than English; grow the fixed
-    # window instead of clipping the last row (same trick as the gate).
     root.update_idletasks()
     need = root.winfo_reqheight() + 8
     if need > H:
@@ -2312,36 +2827,35 @@ def _login_window(cfg, kit):
     return result.get("identity")
 
 
-# ----------------------------------------------------------------------
-# main window
-# ----------------------------------------------------------------------
+
+
+
 
 def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     action = {"now": "quit"}
     pal = kit.pal
 
 
-    # Pending after-ids, cancelled on close. v8.49: pruned as it grows.
-    # poll_status appends one id every 500 ms and nothing ever removed the
-    # ones that had already fired, so this was the one unbounded structure
-    # in the GUI (~7,200 dead integers per hour per window). Every other
-    # registry here - RETEXT and kit.repaints - is pruned correctly.
+
+
+
+
+
     aids = []
     AIDS_CAP = 64
 
     def after_ms(ms, fn):
-        """root.after that keeps `aids` bounded."""
         aid = root.after(ms, fn)
         aids.append(aid)
         if len(aids) > AIDS_CAP:
-            del aids[:len(aids) - AIDS_CAP]   # oldest have already fired
+            del aids[:len(aids) - AIDS_CAP]
         return aid
 
-    def post(hid):
+    def post(key_id):
         tid = app.thread_id
         if tid:
             try:
-                PostThreadMessage(tid, WM_HOTKEY, hid, 0)
+                PostThreadMessage(tid, WM_HOTKEY, key_id, 0)
             except Exception:
                 pass
         else:
@@ -2352,22 +2866,23 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     suppress = [False]
 
     root = tk.Tk()
+    root.withdraw()  # hide until fully built
     kit.attach(root)
     kit.reg(root, "bg")
     root.title(APP_NAME)
     root.configure(background=pal["bg"])
     root.update_idletasks()
-    # Clamp to the (physical) screen so the title bar stays reachable
-    # on short displays; min size follows, never above the clamp.
+
+
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
-    # v8.32: 770 - the +10 px the taller header strip asked for, so
-    # the tab pages below keep the room they had in v8.31.
+
+
     gw, gh = min(980, max(640, sw - 24)), min(770, max(480, sh - 24))
     root.geometry("%dx%d" % (gw, gh))
     root.minsize(min(860, gw), min(640, gh))
     try:
-        root.iconbitmap(logo.ico_path())   # real .ico: title bar + taskbar
+        root.iconbitmap(logo.ico_path())
     except Exception:
         try:
             root.iconphoto(True, logo.photoimage(tk, 64))
@@ -2376,12 +2891,16 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.defocus_hook(root)
     kit.titlebar_hook(root)
 
-    # Single-key binds fire system-wide via the pass-through keyboard
-    # hook; while the user types in OUR text fields (or type-selects
-    # in our listboxes) they must stay silent, so track focus.
+
+
+
     def _focus_watch(event):
-        app.input_focused = event.widget.winfo_class() in (
-            "Entry", "Combobox", "TCombobox", "Listbox")
+        try:
+            app.input_focused = _widget_class(root, event.widget) in (
+                "Entry", "TEntry", "Combobox", "TCombobox", "Listbox",
+                "Spinbox", "Text")
+        except Exception:
+            app.input_focused = False
     root.bind_all("<FocusIn>", _focus_watch, add="+")
     root.bind_all("<FocusOut>",
                   lambda e: setattr(app, "input_focused", False),
@@ -2405,86 +2924,93 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         style.configure("TScrollbar", background=pal["light_bg"],
                         troughcolor=pal["bg"], arrowcolor=pal["text"],
                         borderwidth=0)
+        try:
+            root.option_add("*TCombobox*Listbox.background", pal["entry"])
+            root.option_add("*TCombobox*Listbox.foreground", pal["text"])
+            root.option_add("*TCombobox*Listbox.selectBackground", pal["accent"])
+            root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        except Exception:
+            pass
     kit.repaint(restyle_tt)
     restyle_tt()
 
-    # ---------------- header ----------------
-    # v8.27: a TALLER header strip - the identity line is the plain
-    # e-mail address (no provider tag) with the licence status on its
-    # OWN line underneath; the Quit button is gone (the window close
-    # button quits) and the light/dark switch moved next to Log Out.
-    # v8.29: the strip packs FLUSH with the client-area top - no top
-    # pady.  The owner's Windows crop showed the native title bar
-    # caption ("Snappy AI" beside the window icon) riding in a dark
-    # band above the header card: the old 10 px top gap pushed the
-    # e-mail/subscription card down and left the caption high in the
-    # band.  Flush packing shrinks the band between the window top and
-    # the card top to exactly the title bar, so the caption sits
-    # centred in it by construction and the card starts as high as the
-    # client area allows.
-    # v8.30: the SIDE gutters are back - the owner only wanted the
-    # card higher, not full-bleed.  padx=10 keeps the same 10 px
-    # background margin on the left and right that every other card in
-    # the window has; only the top edge stays flush.
-    header = tk.Frame(root, bg=pal["card"])
-    kit.reg(header, "card")
-    header.pack(fill="x", padx=10, pady=(0, 6))
-    # v8.31: fixed-height strip - 20 px shorter than v8.30's 84 px -
-    # with a bigger logo and compacted identity lines inside it.
-    # v8.32: the strip takes 10 px back (HEADER_H) and the window
-    # grows with it; the logo seat below is untouched.
-    header.configure(height=HEADER_H)
-    header.pack_propagate(False)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    topbar = tk.Frame(root, bg=pal["card"])
+    kit.reg(topbar, "card")
+    topbar.pack(fill="x", padx=10, pady=(0, 6))
+
+
+
+
+    topbar.configure(height=TOPBAR_H)
+    topbar.pack_propagate(False)
     try:
-        hl = tk.Label(header, bg=pal["card"])
+        hl = tk.Label(topbar, bg=pal["card"])
         kit.reg(hl, "card")
-        himg = logo.surface_image(tk, HEADER_LOGO_PX,
+        himg = logo.surface_image(tk, TOPBAR_LOGO_PX,
                                   _surf_of(hl, pal["card"]))
         hl.configure(image=himg, bg=_surf_of(hl, pal["card"]),
                      padx=0, pady=0, borderwidth=0)
         hl._img = himg
         hl.pack(side="left", padx=(14, 10))
 
-        def _relogo_header():
+        def _relogo_topbar():
             surf = _surf_of(hl, pal["card"])
-            im2 = logo.surface_image(tk, HEADER_LOGO_PX, surf)
+            im2 = logo.surface_image(tk, TOPBAR_LOGO_PX, surf)
             hl.configure(image=im2, bg=surf)
             hl._img = im2
-        kit.repaint(_relogo_header)
+        kit.repaint(_relogo_topbar)
     except Exception:
         pass
-    # v8.32: the identity stack hangs from the strip top instead of
-    # riding centred - the frame spans the full card height and the
-    # title packs on HEADER_TEXT_TOP.  v8.33 raised that seat by
-    # HEADER_TEXT_RAISE (4 px) above the logo's centring remainder so
-    # the licence line clears the card's bottom edge; the e-mail and
-    # licence lines keep their 1 px gaps and travel with the title.
-    # The logo's own seat is untouched, so the mark never moves.
-    # v8.34: the stack is only TWO lines now - the title and a build
-    # stamp.  The customer e-mail and the licence status moved down to
-    # the status bar (right-hand side), so the header no longer carries
-    # anything that can wrap, and the card has room to breathe.
-    tt = tk.Frame(header, bg=pal["card"])
+
+
+
+
+
+
+
+
+
+
+
+    tt = tk.Frame(topbar, bg=pal["card"])
     kit.reg(tt, "card")
     tt.pack(side="left", fill="y")
-    h1 = tk.Label(tt, text=APP_NAME, font=F_HEAD_H1, bg=pal["card"],
+    h1 = tk.Label(tt, text=APP_NAME, font=F_TOP_H1, bg=pal["card"],
                   fg=pal["text"])
     kit.reg(h1, "card_text")
-    h1.pack(anchor="w", pady=(HEADER_TEXT_TOP, 0))
-    # Build stamp, in the seat the customer e-mail occupied before
-    # v8.34 - same face constant as the old e-mail line, same 1 px gap
-    # under the title.  v8.36 adds HEADER_BUILD_INDENT of left inset so
-    # the smaller glyphs line up optically with the 20 pt bold title
-    # above them (see the constant's comment for why this is needed even
-    # though both labels are anchored west in the same frame).
+    h1.pack(anchor="w", pady=(TOPBAR_TEXT_TOP, 0))
+
+
+
+
+
+
     h2 = tk.Label(tt, text=i18n.L("hdr.build", APP_VERSION),
-                  font=F_HEAD_LINE, bg=pal["card"], fg=pal["muted"])
+                  font=F_TOP_LINE, bg=pal["card"], fg=pal["muted"])
     kit.reg(h2, "card_muted")
-    h2.pack(anchor="w", padx=(HEADER_BUILD_INDENT, 0), pady=(1, 0))
+    h2.pack(anchor="w", padx=(TOPBAR_BUILD_INDENT, 0), pady=(1, 0))
     R(lambda: h2.configure(text=i18n.L("hdr.build", APP_VERSION))
       if _live(h2) else False)
 
-    right = tk.Frame(header, bg=pal["card"])
+    right = tk.Frame(topbar, bg=pal["card"])
     kit.reg(right, "card")
     right.pack(side="right", padx=12)
 
@@ -2505,9 +3031,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             pass
         close_all("logout")
 
-    # right cluster: [theme switch] [Log Out] | [Pause] [Launch].
-    # The switch sits directly next to Log Out (v8.27); Quit is gone -
-    # the window's close button is the only exit.
+
+
+
     kit.switch_widget(right, kit.toggle).pack(side="left", padx=(0, 10))
     _b_logout = kit.button(right, i18n.L("btn.logout"), do_logout)
     _b_logout.pack(side="left", padx=(0, 18))
@@ -2522,19 +3048,18 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         R(lambda b=_b, k=_k: kit.set_text(b, i18n.L(k)) if _live(b)
           else False)
 
-    # ---------------- tab bar ----------------
+
     bar = tk.Frame(root, bg=pal["tab_bg"])
-    kit.reg(bar, "bg")
+    kit.reg(bar, "tab_bg")
     bar.pack(fill="x", padx=10)
-    # v8.27: five tabs by option category - the Color Picker merged
-    # into Colors.
-    # v8.38: Handler sits right after Colors (it
-    # holds the advanced colour/brightness knobs the picker tab does
-    # not), Experimental collects every dropdown, Help closes the row.
-    # v8.39: tabs are keyed by SLUG, never by display name - the names
-    # come from the live catalog, so they cannot be dict keys.
-    tab_names = ["assist", "colors", "handler", "hotkeys", "macros",
-                 "advanced", "experimental", "help"]
+
+
+
+
+
+
+
+    tab_names = list(TAB_NAMES)
     tab_btns = {}
     pages = {}
     current = {"tab": tab_names[0]}
@@ -2569,12 +3094,12 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 pg.pack_forget()
     kit.repaint(lambda: show_tab(current["tab"]))
 
-    # Row frames for the wrapping tab bar. They MUST be created before
-    # the tab buttons: the buttons stay children of `bar` and are packed
-    # into a row with pack(in_=...), and Tk paints a master's children in
-    # creation order - a frame created after the buttons would paint its
-    # background right over them. One frame per possible row; unused
-    # frames simply stay unpacked.
+
+
+
+
+
+
     tab_rows = []
     for _i in range(len(tab_names)):
         fr = tk.Frame(bar, bg=pal["tab_bg"])
@@ -2593,6 +3118,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         f = tkfont.Font(font=F_TAB)
         b._tmeta = (int(f.measure(text)) + 12,)
         b._tabrow = None
+        b._tabside = None
         tab_btns[tn] = b
         pages[tn] = tk.Frame(content_host, bg=pal["card"])
         kit.reg(pages[tn], "card")
@@ -2606,18 +3132,18 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             layout_tabs()
         R(_retab)
 
-    # The tab bar WRAPS. Packed in one row, the eight tabs run past the
-    # window edge with any font wider than Segoe UI - the last tabs
-    # (the last tabs) were then invisible AND unclickable.
-    # layout_tabs() re-flows the buttons into the row frames whenever
-    # the bar is resized.
+
+
+
+
+
     def layout_tabs(_event=None):
         try:
             avail = bar.winfo_width()
             if avail < 200:
                 avail = root.winfo_width() - 24
             if avail < 200:
-                return                  # not mapped yet
+                return
         except Exception:
             return
         row = 0
@@ -2627,12 +3153,16 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             w = b._tmeta[0] + 8
             if used and used + w > avail:
                 row += 1
+                row = min(row, len(tab_rows) - 1)
                 used = 0
             used += w
-            if b._tabrow != row:
+            side = "right" if tn == "help" else "left"
+            gap = (0, 3) if side == "right" else (3, 0)
+            if b._tabrow != row or b._tabside != side:
                 b.pack_forget()
-                b.pack(in_=_tab_row(row), side="left", padx=(3, 0))
+                b.pack(in_=_tab_row(row), side=side, padx=gap)
                 b._tabrow = row
+                b._tabside = side
         for i, fr in enumerate(tab_rows):
             if i <= row:
                 fr.pack(fill="x")
@@ -2640,36 +3170,35 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 fr.pack_forget()
 
     bar.bind("<Configure>", layout_tabs)
-    root.after(60, layout_tabs)
+    try:
+        root.after(60, layout_tabs)
+    except Exception:
+        pass
 
-    # ---------------- description bar + Apply ----------------
-    # v8.39: Apply lives in THIS row, flush right, opposite the setting
-    # description it commits.  It used to appear in the footer next to
-    # the Running/Standby light, which read as if it belonged to the
-    # engine state instead of to the edited settings.
+
+
+
+
+
     desc_row = tk.Frame(root, bg=pal["desc_bg"])
     kit.reg(desc_row, "desc_frame")
     desc_row.pack(fill="x", padx=10)
 
     desc_var = tk.StringVar(value=i18n.L("desc.default"))
-    # v8.51: multi-line bar. A single-line label wrapped only as far
-    # as the window grew tall; long descriptions (and longer
-    # translations) were clipped outright - "fully visible" now means
-    # the bar takes up to five lines and GROWS its own height, so no
-    # setting's text is ever cut off.
+
+
+
+
+
     desc_bar = tk.Label(desc_row, textvariable=desc_var, font=F_DESC,
                         bg=pal["desc_bg"], fg=pal["muted"], anchor="w",
                         justify="left", padx=12, pady=6, wraplength=660)
     kit.reg(desc_bar, "desc")
     desc_bar.pack(side="left", fill="both", expand=True)
 
-    DESC_MAX_LINES = 5          # normal hover texts fit well inside
-    DESC_MAX_CHARS = 1900       # absolute ceiling for huge locales
+    DESC_MAX_LINES = 5
 
     def _desc_height(_event=None):
-        """Fit the bar's own line count to the CURRENT text at the
-        CURRENT width - never more than DESC_MAX_LINES, so one long
-        description cannot push the tabs off a small screen."""
         try:
             w = desc_row.winfo_width()
             if w > 80:
@@ -2677,9 +3206,14 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 if str(desc_bar.cget("wraplength")) != str(want):
                     desc_bar.configure(wraplength=want)
                 txt = desc_var.get()
+                try:
+                    avg = tkfont.Font(font=F_DESC).measure("0123456789") / 10.0
+                    per_line = max(20, int(want / max(4.0, avg)))
+                except Exception:
+                    per_line = max(20, int(want * 0.13))
                 lines = 0
                 for para in txt.split("\n"):
-                    lines += max(1, len(para) // int(want * 0.92) + 1)
+                    lines += max(1, len(para) // per_line + 1)
                 want_h = min(DESC_MAX_LINES, max(2, lines))
                 if int(desc_bar.cget("height")) != want_h:
                     desc_bar.configure(height=want_h)
@@ -2689,16 +3223,14 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     desc_row.bind("<Configure>", _desc_height)
     _desc_height()
 
-    # v8.40: the description bar remembers WHERE its current text came
-    # from, so a language switch can re-translate it in place.  Without
-    # this the bar kept showing the previous language's description
-    # until the next hover - which read as "descriptions are not
-    # translated".
+
+
+
+
+
     desc_src = [None]
 
     def set_desc(fn):
-        """fn() -> the description text in the live language, or None
-        for the default hint."""
         desc_src[0] = fn
         desc_var.set(fn() if fn else i18n.L("desc.default"))
         _desc_height()
@@ -2718,7 +3250,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda: kit.set_text(apply_btn, i18n.L("btn.apply"))
       if _live(apply_btn) else False)
 
-    # ---------------- footer ----------------
+
     footer = tk.Frame(root, bg=pal["bg"])
     kit.reg(footer, "bg")
     footer.pack(fill="x", padx=10, pady=(2, 4))
@@ -2742,16 +3274,21 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             for key, (kind, var) in vars_.items():
                 value = cfg.get(key)
                 if kind == "bool":
-                    var.set(bool(value))
+                    want = bool(value)
+                    if bool(var.get()) != want:
+                        var.set(want)
                 elif kind == "map":
-                    var.set(map_display(key, value))
+                    want = map_display(key, value)
+                    if var.get() != want:
+                        var.set(want)
                 else:
-                    var.set(str(value))
+                    want = str(value)
+                    if var.get() != want:
+                        var.set(want)
         finally:
             suppress[0] = False
 
     def widget_values():
-        """Parse every widget into values; returns (values, bad_keys)."""
         values = {}
         bad = []
         for key, (kind, var) in vars_.items():
@@ -2774,8 +3311,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         return values, bad
 
     def _sync_from_cfg(snapshot=None):
-        """Re-sync the GUI from the effective config (after the hook
-        thread reload), surface theme changes and config.ini overrides."""
+        if dirty.get("on"):
+            return
         refresh_fields()
         dirty["on"] = False
         apply_btn.pack_forget()
@@ -2797,7 +3334,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         post(6)
         dirty["on"] = False
         apply_btn.pack_forget()
-        root.after(350, lambda: _sync_from_cfg(snapshot))
+        try:
+            root.after(350, lambda: _sync_from_cfg(snapshot))
+        except Exception:
+            pass
         if bad:
             status_msg(i18n.L("st.saved_bad", ", ".join(bad)))
         else:
@@ -2812,17 +3352,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             defaultextension=".json",
             filetypes=[(i18n.L("st.file_settings"), "*.json")])
         if path:
-            # export what you SEE: widget edits win over saved values,
-            # without silently changing the running config
             values, _bad = widget_values()
             merged = dict(cfg.values)
             merged.update(values)
             try:
-                # v8.49: localised, and routed through Config.export_to so
-                # the SENSITIVE_KEYS filter applies to GUI exports too - an
-                # exported settings file is the one artefact a user
-                # deliberately hands to someone else.
-                ok, text = cfg.export_to(path)
+                ok, text = cfg.export_to(path, values=merged)
                 status_msg(text)
             except OSError as exc:
                 status_msg(i18n.L("st.export_fail", exc))
@@ -2837,24 +3371,29 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             if ok:
                 cfg.save()
                 post(6)
-                root.after(350, lambda: _sync_from_cfg())
+                try:
+                    _sync_from_cfg()
+                except Exception:
+                    pass
             status_msg(text)
 
     def restore_defaults():
         if not messagebox.askyesno(APP_NAME, i18n.L("st.reset_confirm")):
             return
         theme = cfg.get("theme")
-        # v8.49: the deployment constants are no longer settings, so there
-        # is nothing to preserve across a reset - they come from
-        # build_secrets and cannot be changed from here. This keep-list used
-        # to carry entitlement_repo / entitlement_branch / both Stripe links
-        # through a restore, which was the last path by which they could
-        # reach config.json.
+
+
+
+
+
+
         cfg.values = dict(DEFAULT_CONFIG)
         cfg.values["theme"] = theme
         cfg.save()
         refresh_fields()
         post(6)
+        dirty["on"] = False
+        apply_btn.pack_forget()
         status_msg(i18n.L("st.defaults_restored"))
 
     _b_rest = kit.button(footer, i18n.L("btn.restore"), restore_defaults,
@@ -2867,38 +3406,22 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                         surface="bg")
     _b_exp.pack(side="left", padx=(0, 6))
 
-    # v8.39: the language chooser sits right beside Export Config.
-    _b_lang = kit.button(
-        footer,
-        i18n.L("btn.language", i18n.native_name(i18n.current())),
-        lambda: _language_window(cfg, kit, root), surface="bg")
-    _b_lang.pack(side="left")
-
     for _b, _k in ((_b_rest, "btn.restore"), (_b_imp, "btn.import"),
                    (_b_exp, "btn.export")):
         R(lambda b=_b, k=_k: kit.set_text(b, i18n.L(k)) if _live(b)
           else False)
 
-    def _relang():
-        if not _live(_b_lang):
-            return False
-        kit.set_text(_b_lang, i18n.L(
-            "btn.language", i18n.native_name(i18n.current())))
-        return True
-
-    R(_relang)
-    # a language change also re-colours/re-rounds everything themed
     R(lambda: (kit.apply(), True)[1] if _live(root) else False)
-    # ...and re-pushes every stored value into its widget, which is
-    # what turns a follow_boost var holding "100%" into "100%" of the
-    # new language (refresh_fields suppresses the dirty trace, so this
-    # never makes Apply appear).
+
+
+
+
     R(lambda: (refresh_fields(), True)[1] if _live(root) else False)
 
-    # v8.27: the running-status light moved from the header down to the
-    # bottom-right corner (this row): "Running.." + green dot while
-    # launched, "Standby.." + orange dot while paused. The Reload
-    # Config button is gone - Apply reloads the engine anyway.
+
+
+
+
     light_box = tk.Frame(footer, bg=pal["bg"])
     kit.reg(light_box, "bg")
     light_box.pack(side="right", padx=(8, 4))
@@ -2914,12 +3437,12 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     light_dot = light.create_oval(3, 3, 13, 13, fill=pal["amber"],
                                   outline="")
 
-    # v8.34: the status bar is now a two-sided row. The left keeps the
-    # live counters ("Assisted N | passed N | theme: X"); the right carries
-    # the identity + licence line that used to be two lines in the header.
-    # Same face (F_DESC), same muted colour, same status_bg - one row, two
-    # anchors, so the registration text always hugs the right edge however
-    # long the counters get.
+
+
+
+
+
+
     status_row = tk.Frame(root, bg=pal["status_bg"])
     kit.reg(status_row, "status_frame")
     status_row.pack(fill="x", side="bottom")
@@ -2938,9 +3461,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     reg_lbl.pack(side="right")
 
     def _status_fit(_event=None):
-        """The status row carries two anchored labels; a long language
-        (German registration + licence line) must wrap instead of
-        pushing the counters off the window (v8.40)."""
         try:
             w = status_row.winfo_width()
             if w < 200:
@@ -2958,13 +3478,13 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     status_row.bind("<Configure>", _status_fit)
     _status_fit()
 
-    # ---------------- setting rows ----------------
+
     def make_row(parent, key, row):
         label, desc, kind, choices = META[key]
         if key not in vars_:
             cur = cfg.get(key)
             var = (tk.BooleanVar(value=bool(cur)) if kind == "bool"
-                   else tk.StringVar(value=str(cur)))
+                       else tk.StringVar(value=map_display(key, cur) if kind == "map" else str(cur)))
             vars_[key] = (kind, var)
             var.trace_add("write", mark_dirty)
         else:
@@ -2975,9 +3495,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         cell.grid(row=row, column=0, sticky="we", padx=10, pady=4)
         cell.columnconfigure(0, weight=1)
 
-        # v8.40 fix: the NAME is catalog text (tr_label), not the raw
-        # English META string, and it re-registers so a live language
-        # switch re-words it in place.
+
+
+
         lbl = tk.Label(cell, text=tr_label(key), font=F_BOLD,
                        bg=pal["card"], fg=pal["text"], anchor="w")
         kit.reg(lbl, "card_bold")
@@ -2989,50 +3509,39 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
           if _live(l) else False)
 
         if kind == "bool":
-            # v8.37: pill switch instead of the "On" checkbox - knob
-            # right = on, track in the logo's red (see ThemeKit.
-            # bool_switch).  Same var contract as the Checkbutton, so
-            # widget_values()/refresh_fields() are untouched.
+
+
+
+
             w = kit.bool_switch(cell, var)
         elif kind == "map":
-            # v8.39: a dropdown whose display strings map onto stored
-            # values (follow_boost: "25%".."100%" -> 0.25..1.0).
-            # v8.40: the display strings are catalog text, and the
-            # frozen `values` list is rebuilt on every language change.
-            def _val_width(k):
-                """Chars for the closed field: long enough for the
-                LONGEST translated value, so no language ever shows a
-                truncated word in a closed dropdown (v8.40 "always
-                fully visible").  The 56 cap only bites beyond the
-                longest string any catalog currently ships (53), and
-                even then the open list shows the whole string."""
-                longest = max([len(d) for d, _v in map_pairs_live(k)]
-                              or [14])
-                return max(14, min(56, longest))
+
+
+
 
             w = ttk.Combobox(cell, textvariable=var,
                              values=[d for d, _v in map_pairs_live(key)],
-                             state="readonly", width=_val_width(key),
+                             state="readonly", width=CHOICE_WIDTH,
                              font=F_BASE)
 
             def _revals(w=w, k=key):
                 if not _live(w):
                     return False
                 w.configure(values=[d for d, _v in map_pairs_live(k)],
-                            width=_val_width(k))
+                            width=CHOICE_WIDTH)
                 return True
 
             R(_revals)
 
             if key == "input_backend":
-                # v8.50: tell the truth about the driver option up
-                # front. Interception needs a DLL AND a kernel driver;
-                # when either is missing the choice still works (the
-                # engine falls back to the standard method with one
-                # log line), but the user must see that it is NOT
-                # active before picking it. The probe runs in a worker
-                # thread because creating an Interception context can
-                # block briefly while the driver loads.
+
+
+
+
+
+
+
+
                 note = tk.Label(cell, text="", font=F_DESC,
                                 bg=pal["card"], fg=pal["muted"],
                                 anchor="e", justify="right")
@@ -3041,38 +3550,68 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
                 def _avail_probe(txt=note):
                     try:
-                        from input_backend import InterceptionBackend
-                        ok = InterceptionBackend.available()
+                        from input_backend import (InterceptionBackend,
+                                                   RebindBackend,
+                                                   DEFAULT_SERVER_URL)
+                        try:
+                            _url = str(cfg.get("server_url")
+                                       or DEFAULT_SERVER_URL)
+                        except Exception:
+                            _url = DEFAULT_SERVER_URL
+                        driver_ok = InterceptionBackend.available()
+                        server_ok = RebindBackend.available(_url)
                     except Exception:
-                        ok = False
-                    def _paint(ok=ok, txt=txt):
+                        driver_ok, server_ok = (False, False)
+                    def _paint(driver_ok=driver_ok, server_ok=server_ok, txt=txt):
                         if not _live(txt):
                             return False
+                        bits = []
+                        if driver_ok:
+                            bits.append("Driver ready")
+                        if server_ok:
+                            bits.append("Server answering")
                         txt.configure(text=(
-                            "Interception detected - ready to use."
-                            if ok else
-                            "Not installed here: picking this keeps "
-                            "the standard Windows method."))
+                            "; ".join(bits) + "."
+                            if bits else
+                            "Neither driver nor server found "
+                            "here: those choices keep the standard "
+                            "Windows method."))
                         return True
-                    R(_paint)
+                    try:
+                        try:
+                            root.after(0, _paint)
+                        except Exception:
+                            pass
+                    except Exception:
+                        R(_paint)
 
                 threading.Thread(target=_avail_probe, daemon=True).start()
         elif kind == "colors":
-            # v8.43: a colour-list row is SEEN, not read - the value
-            # side is a strip of colour boxes (same look as the preset
-            # swatches below), one per stored colour, right-aligned
-            # like every other tab's value.  Clicking a box removes
-            # that colour; the two add buttons below fill the
-            # strip (fifteen boxes max - v8.45's grid is 15 boxes
-            # wide, so a full list spans exactly the preset row).
-            # The StringVar behind it still holds the classic
-            # "r,g,b; r,g,b" (or "off"), so config, engine, import
-            # and export are untouched.
+
+
+
+
+
+
+
+
+
+
             w = tk.Frame(cell, bg=pal["card"])
             kit.reg(w, "card")
             _chip_strips[key] = (w, var)
             var.trace_add("write", lambda *a, k=key: rebuild_chips(k))
             rebuild_chips(key)
+        elif kind in CAPTURE_KINDS:
+            w = tk.Entry(cell, textvariable=var, width=13, font=F_ENTRY,
+                         relief="solid", borderwidth=1, bg=pal["entry"],
+                         fg=pal["text"], insertbackground=pal["text"],
+                         highlightbackground=pal["entry_bd"],
+                         highlightthickness=1)
+            kit.reg(w, "entry")
+            capture_button(cell, kit, root, app, key, var, kind,
+                           status_msg, R).grid(row=0, column=2, sticky="ns",
+                                               padx=(6, 0))
         else:
             w = tk.Entry(cell, textvariable=var, width=16, font=F_ENTRY,
                          relief="solid", borderwidth=1, bg=pal["entry"],
@@ -3082,26 +3621,21 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             kit.reg(w, "entry")
         w.grid(row=0, column=1, sticky="e")
 
-    # ---------------- colour-list chips (v8.43) ----------------
-    # The two colour settings show their value as COLOUR BOXES, so
-    # these helpers translate between the stored ";" string and the
-    # strip on screen.  Fifteen colours per setting is the owner's
-    # cap (v8.45: the whole right side is one 15-box grid, so a full
-    # strip spans exactly the preset row below it); an empty list
-    # stores "off" - the word the engine already understands for
-    # "disabled".
+
+
+
+
+
+
+
+
     _chip_strips = {}
     _OFF_WORDS = ("off", "none", "disabled", "false")
     _MAX_CHIPS = 15
-    CHIP_SW, CHIP_PAD = 24, 2      # same box as the preset swatches
-    CHIP_OFF_X = "#cc2f38"         # v8.44: the red X of an empty list
+    CHIP_SW, CHIP_PAD = 24, 2
+    CHIP_OFF_X = "#cc2f38"
 
     def _token_rgb(tok):
-        """RGB triple of one stored colour token, or None.
-
-        Accepts the same forms the engine accepts: a preset name
-        (blue, grey, ...) resolved through vision's table, or three
-        numbers r,g,b."""
         preset = vision.ACCENT_PRESETS.get(tok.strip().lower())
         if preset is not None:
             return tuple(int(v) for v in vision.hsv_to_rgb(*preset))
@@ -3114,16 +3648,12 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         return tuple(min(255, max(0, p)) for p in parts)
 
     def _color_tokens(value):
-        """The raw ';' tokens of a colour-list value, minus off-words
-        and blanks - the tokens stay RAW so removing one box never
-        rewrites the others."""
         s = str(value or "").strip()
         if not s or s.lower() in _OFF_WORDS:
             return []
         return [t.strip() for t in s.split(";") if t.strip()]
 
     def rebuild_chips(key):
-        """Repaint one colour-list strip from the value it carries."""
         entry = _chip_strips.get(key)
         if entry is None:
             return
@@ -3136,10 +3666,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         shown = [(i, _token_rgb(t)) for i, t in enumerate(toks)]
         shown = [(i, rgb) for i, rgb in shown if rgb is not None]
         if not shown:
-            # v8.44: an empty list shows the SAME box a colour would
-            # get, crossed out with a red X - "off" in the language of
-            # the boxes around it instead of a word.  Hovering it
-            # explains in plain words.
+
+
+
+
             off = tk.Canvas(strip, width=CHIP_SW, height=CHIP_SW,
                             bg=pal["light_bg"], highlightthickness=1,
                             highlightbackground=pal["entry_bd"],
@@ -3168,10 +3698,13 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 lambda: i18n.L("col.chip_desc", rr[0], rr[1], rr[2],
                                tr_label(k))))
             chip.bind("<Leave>", lambda e: set_desc(None))
+        if len(shown) > _MAX_CHIPS:
+            more = tk.Label(strip, text="+%d" % (len(shown) - _MAX_CHIPS),
+                            font=F_DESC, bg=pal["card"], fg=pal["muted"])
+            kit.reg(more, "card_muted")
+            more.pack(side="left", padx=CHIP_PAD)
 
     def remove_chip(key, idx):
-        """A click on a box: that colour leaves the list.  The write
-        trace repaints the strip and marks the tab dirty."""
         entry = _chip_strips.get(key)
         if entry is None:
             return
@@ -3186,8 +3719,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                           tr_label(key)))
 
     def _reword_chips():
-        """Live language switch: the strips rebuild so even the
-        crossed-out box's hover text re-translates."""
         alive = False
         for k in list(_chip_strips):
             if _live(_chip_strips[k][0]):
@@ -3197,44 +3728,63 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     R(_reword_chips)
 
-    def fill_list(page, keys):
-        grid = tk.Frame(page, bg=pal["card"])
+    # The scrollable inner frame of every SETTINGS page, so _fit_window can
+    # measure real content height - a canvas only ever reports its viewport.
+    _FIT = []
+    # Long-form pages (Help) contribute their WIDTH only: a document is meant
+    # to scroll, and sizing the window to it left ~200 px of dead space beside
+    # every settings tab.
+    _FIT_DOC = []
+
+    def fill_list(page, keys, scroll=True):
+        host = page
+        if scroll:
+            host, bind_wheel = _scrollable(page, kit, pal)
+            _FIT.append(host)
+        grid = tk.Frame(host, bg=pal["card"])
+        if scroll:
+            bind_wheel(grid)
         kit.reg(grid, "card")
         grid.pack(fill="x", padx=6, pady=8)
         grid.columnconfigure(0, weight=1)
         for i, key in enumerate(keys):
             make_row(grid, key, i)
 
-    # ---------------- Assistance ----------------
-    # v8.27: EVERY on/off checkbox of the product lives on this tab.
+
+
+
     assist_page = pages["assist"]
     fill_list(assist_page, TAB_ASSIST)
-    _wrapping_note(assist_page, kit, pal, "note.assist")
-
-    # ---------------- Colors ----------------
-    # v8.27: the old Color Picker tab merged INTO this one; v8.39
-    # renamed it Colors and gave it the left-aligned picker layout.
-    cp = pages["colors"]
 
 
-    # v8.43 layout, values on the right like EVERY other tab - and
-    # v8.45 makes the whole right side ONE 15-BOX GRID: the setting
-    # rows open the page at full window width - name on the left,
-    # value flush with the right edge - and the two colour lists show
-    # their colours as BOXES (make_row's "colors" kind), fifteen at
-    # most, instead of an "r,g,b; r,g,b" string; an empty list shows
-    # one crossed-out box (v8.44) instead of the word Off.  A full
-    # list spans exactly the 15-box grid everything below keeps.
-    # Current RGB Value keeps its place under them, but its three
-    # boxes are no longer numbers: each one glows with how much red /
-    # green / blue the picked colour holds - and each one is FIVE
-    # boxes wide (3 x 5 = 15), so the row spans the same grid.  Under
-    # the rows the picker keeps its place on the left, and everything
-    # that belongs to the picked colour - showcase, presets, the two
-    # add buttons, the screen row, the suggestion boxes - sits on the
-    # RIGHT SIDE of the window: its gap to the right edge is the same
-    # 16 px the setting values keep, mirroring the picker's 16 px
-    # inset on the left.
+
+
+    # ---- Detection tab: colour lists and picker on top, thresholds below, in
+    #      ONE scroll region (the separate Colours tab is gone) ----
+    chp = pages["handler"]
+    chinner, chbind = _scrollable(chp, kit, pal)
+    _FIT.append(chinner)
+    cp = chinner
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     cgrid = tk.Frame(cp, bg=pal["card"])
     kit.reg(cgrid, "card")
     cgrid.pack(fill="x", padx=6, pady=(8, 2))
@@ -3242,20 +3792,20 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     for _ri, _ckey in enumerate(TAB_DETECT):
         make_row(cgrid, _ckey, _ri)
 
-    # v8.42: the picked colour's R,G,B row UNDER the two colour
-    # lists.  v8.43: still its own setting row, still right-aligned,
-    # still fed only by the picker (and the preset / screen buttons)
-    # - but the three boxes now CHANGE COLOUR with the amounts:
-    # the red box carries the red share of the picked colour (#rr0000),
-    # the green box the green share, the blue box the blue share, so
-    # the row is read as colour instead of numbers.  The numbers
-    # themselves live on in the same StringVars the picker pushes
-    # into, further down.
-    # v8.45: each box is FIVE colour boxes wide - 144 px + its 2 px
-    # border + 2 px pack padding on each side = one 150 px slot, five
-    # of the 30 px box pitches - so three boxes span exactly the
-    # 15-box grid the lists, the presets and the buttons below keep
-    # (3 x 5 = 15), left and right edges included.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     rgb_vars = {}
     for _ch, _dflt in (("r", "198"), ("g", "40"), ("b", "40")):
         rgb_vars[_ch] = tk.StringVar(value=_dflt)
@@ -3275,14 +3825,14 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda l=rgb_lbl: l.configure(text=i18n.L("col.rgb.name"))
       if _live(l) else False)
 
-    # v8.45 arithmetic: one slot of the 15-box grid is one box pitch
-    # times five - pitch = canvas 24 + border 2 + pack padding 2*2 =
-    # 30 px, so the slot is 150 px and the canvas is 150 - 4 padding
-    # - 2 border = 144 px.  Three of them span exactly 446 px outer
-    # edge to outer edge - the same span as the fifteen preset
-    # swatches below, edges included.
-    RGB_SLOT = 5 * (CHIP_SW + 2 + 2 * CHIP_PAD)         # 150
-    RGB_BW, RGB_BH = RGB_SLOT - 2 * CHIP_PAD - 2, 22    # 144
+
+
+
+
+
+
+    RGB_SLOT = 5 * (CHIP_SW + 2 + 2 * CHIP_PAD)
+    RGB_BW, RGB_BH = RGB_SLOT - 2 * CHIP_PAD - 2, 22
     rgb_box = tk.Frame(rgb_cell, bg=pal["card"])
     kit.reg(rgb_box, "card")
     rgb_box.grid(row=0, column=1, sticky="e")
@@ -3296,8 +3846,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         rgb_chips[_ch] = _bx
 
     def paint_rgb_chips():
-        """v8.43: glow each channel box with its own share - brighter
-        red means more red in the picked colour, and so on."""
         try:
             vals = {"r": max(0, min(255, int(rgb_vars["r"].get()))),
                     "g": max(0, min(255, int(rgb_vars["g"].get()))),
@@ -3321,16 +3869,16 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     host = tk.Frame(cp, bg=pal["card"])
     kit.reg(host, "card")
     host.pack(fill="x", padx=6, pady=(0, 8))
-    # v8.43: column 0 takes all the slack, so the controls column is
-    # pushed against the RIGHT edge of the window; its own 10 px pad
-    # plus the host's 6 px make the same 16 px gap every setting
-    # value keeps on every tab.
+
+
+
+
     host.columnconfigure(0, weight=1)
 
-    # Row 1: picker left, everything about the picked colour on the
-    # right side of the window - the two columns start on the same
-    # row, so the value stack sits exactly beside the picker, not
-    # beside the settings above it.
+
+
+
+
     left = tk.Frame(host, bg=pal["card"])
     kit.reg(left, "card")
     left.grid(row=0, column=0, sticky="nw")
@@ -3351,41 +3899,41 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.reg(right, "card")
     right.grid(row=0, column=1, sticky="ne", padx=(18, 10))
 
-    # v8.45 layout, top to bottom, every block flush with the same
-    # RIGHT edge - the window's, minus the shared 16 px gap - AND
-    # every block spanning the same 15-BOX GRID (the owner's
-    # alignment rule): colour showcase (with its #value drawn INSIDE
-    # it) -> the fifteen presets -> the two add buttons (one per
-    # list, no Target caption) -> the screen row (no Auto caption) ->
-    # the fifteen suggestion boxes, empty until "Suggest colors from
-    # screen" fills them.  The R,G,B row lives UP in the settings
-    # grid as three glowing channel boxes of five units each, so this
-    # block opens level with the TOP of the picker surface (same pady
-    # as the picker canvas).
-    #
-    # The showcase size is arithmetic, NOT measured: a
-    # winfo_reqwidth() taken before the window maps returns garbage on
-    # real Tk (the old "as wide as the RGB row" rule silently shipped a
-    # 120 px box).  WIDTH: it spans exactly the preset row below it -
-    # right edge on the last swatch's right edge, left edge on the
-    # first swatch's left edge (owner's rule, now read from the
-    # right).  HEIGHT (v8.45): the showcase absorbs all the vertical
-    # slack so the BOTTOM of the suggestion boxes lands exactly on
-    # the bottom of the hue slider in the left column.  Both columns
-    # start on the same row and every block below the showcase has a
-    # fixed pixel height - swatch rows are canvas 24 + border 2, the
-    # button pills are ThemeKit.BTN_H - and fixed pack padding, so
-    # this is exact subtraction, not measurement:
-    #   left  = 6 + (SV + 2) + 6 + (22 + 2)                  = 238
-    #   right = 6 + (SHOW_H + 2) + (8 + 26 + 8) + (BTN_H + 6)
-    #           + (BTN_H + 6) + (4 + 26)
-    # SHOW_H solves to 84.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     PRESET_SW, PRESET_PAD = 24, 2
     PRESET_SPAN = (len(COLOR_PRESETS) * (PRESET_SW + 2 + 2 * PRESET_PAD)
-                   - 2 * PRESET_PAD)          # 15 boxes: 446
-    SHOW_W = PRESET_SPAN - 2          # minus the showcase's own border
-    BTN_GAP = 6                       # between the two buttons of a row
-    BTN_W = (PRESET_SPAN - BTN_GAP) // 2   # 220: 2 + 220 + 6 + 220 + 2
+                   - 2 * PRESET_PAD)
+    SHOW_W = PRESET_SPAN - 2
+    BTN_GAP = 6
+    BTN_W = (PRESET_SPAN - BTN_GAP) // 2
     LEFT_H = 6 + (SV + 2) + 6 + (22 + 2)
     SHOW_H = (LEFT_H - 8
               - (8 + PRESET_SW + 2 + 8)
@@ -3428,17 +3976,13 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         buf = io.BytesIO()
         _PILImage.fromarray(_hsv_grid(picker["h"]), "RGB").save(
             buf, format="PNG")
-        sv_photo[0] = tk.PhotoImage(data=buf.getvalue())
+        sv_photo[0] = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
         sv_canvas.delete("bg")
         sv_canvas.create_image(0, 0, anchor="nw", image=sv_photo[0],
                                tags="bg")
         place_sv_mark()
 
     def _render_sv_fallback():
-        """v8.67: the picker used to call PIL unconditionally - on a
-        Pillow-less build the Colors tab died with a raw NameError the
-        moment it was built. Pure-tk fallback: coarse S x V rectangles
-        (10x10 is visually close enough at this size and cheap)."""
         n = 10
         cell = SV // n
         sv_canvas.delete("bg")
@@ -3465,9 +4009,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             arr[:, x] = (int(r * 255), int(g * 255), int(b * 255))
         buf = io.BytesIO()
         _PILImage.fromarray(arr, "RGB").save(buf, format="PNG")
-        hue_photo[0] = tk.PhotoImage(data=buf.getvalue())
-        # v8.44: tag the gradient so a re-render replaces it instead
-        # of stacking a second image under the first.
+        hue_photo[0] = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode("ascii"))
+
+
         hue_canvas.delete("bg")
         hue_canvas.create_image(0, 0, anchor="nw", image=hue_photo[0],
                                 tags="bg")
@@ -3489,9 +4033,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     def place_sv_mark():
         x = picker["s"] * (SV - 1)
         y = (1.0 - picker["v"]) * (SV - 1)
-        # v8.44: tag-based, like the hue mark - item ids are per
-        # canvas, so an id kept from one canvas must never be used to
-        # delete on it again.
+
+
+
         sv_canvas.delete("smark")
         sv_mark[0] = sv_canvas.create_oval(x - 5, y - 5, x + 5, y + 5,
                                            outline="#ffffff", width=2,
@@ -3499,23 +4043,19 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
     def place_hue_mark():
         x = picker["h"] * (SV - 1)
-        # v8.44 WHITE-SLIDER FIX: this used to delete the OLD mark on
-        # sv_canvas (wrong canvas!) and then draw a NEW white rectangle
-        # on the hue bar every single call.  The deletes ate items of
-        # the picker square and the undeleted marks stacked up on the
-        # bar - after a few drags the hue slider was a solid white
-        # strip (still clickable, hence "works but looks weird").  One
-        # tagged mark, replaced in place, on its own canvas.
+
+
+
+
+
+
+
         hue_canvas.delete("hmark")
         hue_mark[0] = hue_canvas.create_rectangle(x - 2, 0, x + 2, 21,
                                                   outline="#ffffff",
                                                   width=2, tags="hmark")
 
     def paint_preview(*_a):
-        """The showcase: fill it with the picked colour and draw the
-        #value inside it, in whichever of black/white contrasts - and
-        (v8.43) glow the three channel boxes of the Current RGB Value
-        row with their share of the same colour."""
         paint_rgb_chips()
         try:
             r = max(0, min(255, int(rgb_vars["r"].get())))
@@ -3528,8 +4068,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             prev.configure(bg=hx)
             prev.delete("all")
             lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
-            # v8.45: the showcase is tall now - keep the #value dead
-            # centre of it, read back from the widget, not hardcoded.
+
+
             prev.create_text(int(prev.cget("width")) // 2,
                              int(prev.cget("height")) // 2,
                              text=hx, font=F_BTN,
@@ -3562,9 +4102,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         place_hue_mark()
         paint_preview()
 
-    # v8.41: the traces are attached AFTER entries_changed exists - the
-    # R,G,B row is built first now (it is the topmost block), so the
-    # old order would have referenced the function too early.
+
+
+
     for _v in rgb_vars.values():
         _v.trace_add("write", entries_changed)
 
@@ -3612,17 +4152,17 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             lambda: i18n.L("st.preset_desc", n)))
         sw.bind("<Leave>", lambda e: set_desc(None))
 
-    # ---- v8.44: two ADD buttons, no Target row --------------------
-    # The old row asked the user to aim a selector (Accent | Exclude)
-    # and THEN press Add Color.  Now every list owns its button: the
-    # colour standing in the picker goes straight where the label
-    # says - "Add to preferred colours" / "Add to refused colours".
-    # No "Target:" caption: the two buttons are the whole row.
-    # v8.45: all FOUR buttons of the right column are one size - each
-    # exactly BTN_W (220) px wide - and the two of a row span the
-    # 15-box grid perfectly: 2 px outer padding + 220 + 6 px gap +
-    # 220 + 2 px = the same 450 px row, the same outer edges as the
-    # preset swatches above and below.
+
+
+
+
+
+
+
+
+
+
+
     add_row = tk.Frame(right, bg=pal["card"])
     kit.reg(add_row, "card")
     add_row.pack(anchor="e", pady=(0, 6))
@@ -3643,16 +4183,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             return None
 
     def add_color(which):
-        """v8.41: APPEND the picked colour to the chosen field with a
-        ';' separator - the old replace behaviour silently threw the
-        user's existing colour list away.
-        v8.43: the list is capped (the strip of boxes the setting
-        shows), and the press past the cap says so instead of growing
-        the value past what the row can display.  v8.45: the cap is
-        FIFTEEN - one full span of the 15-box grid - so the sixteenth
-        press is the one that refuses.
-        v8.44: `which` is the button that was pressed ("accent" /
-        "exclude") - the button label IS the target, no selector."""
         rgb = read_rgb()
         if rgb is None:
             status_msg(i18n.L("st.rgb_bad"))
@@ -3687,9 +4217,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda: kit.set_text(add_ref_btn, i18n.L("col.add_ref"))
       if _live(add_ref_btn) else False)
 
-    # ---- v8.44: the screen row - no "Auto:" caption either --------
-    # Two buttons, nothing else: one takes the single colour under
-    # the cursor, the other fills the suggestion strip below.
+
+
+
     auto_row = tk.Frame(right, bg=pal["card"])
     kit.reg(auto_row, "card")
     auto_row.pack(anchor="e", pady=(0, 6))
@@ -3709,7 +4239,10 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                     status_msg(i18n.L("st.pick_fail"))
             except Exception as exc:
                 status_msg(i18n.L("st.pick_err", exc))
-        root.after(3000, cap)
+        try:
+            root.after(3000, cap)
+        except Exception:
+            pass
 
     pick_btn = kit.button(auto_row, i18n.L("col.pick"), pick_from_screen,
                           fixed_w=BTN_W)
@@ -3717,20 +4250,19 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     R(lambda: kit.set_text(pick_btn, i18n.L("col.pick"))
       if _live(pick_btn) else False)
 
-    # ---- suggested swatches (v8.44) --------------------------------
-    # FIFTEEN boxes (v8.45), the SAME size and spacing as the premade
-    # preset swatches above, in their own right-flush row under the
-    # screen buttons - so the suggestion row spans the same 15-box
-    # grid as everything else.  The row starts empty and fills when
-    # "Suggest colors from screen" finds colours around the cursor;
-    # clicking a box loads it into the picker like a preset does.
+
+
+
+
+
+
+
     SUG_N = 15
     sug_row = tk.Frame(right, bg=pal["card"])
     kit.reg(sug_row, "card")
     sug_row.pack(anchor="e", pady=(4, 0))
 
     def _show_suggestions(sug):
-        """Rebuild the suggestion strip - main thread only."""
         if not _live(sug_row):
             return
         for child in sug_row.winfo_children():
@@ -3763,19 +4295,19 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         status_msg(i18n.L("st.sug_wait"))
 
         def work():
-            # v8.44 debug: capture + binning now run OFF the UI thread.
-            # On the main thread a slow first capture (mss setup, dxcam
-            # retrying a static desktop) froze the window for seconds
-            # and any raise inside the after() callback died with no
-            # status at all - the button looked dead.  The worker only
-            # touches plain data; every outcome - colour boxes, "no
-            # suggestions", "capture failed", the exception text -
-            # comes back through root.after as a readable status.
+
+
+
+
+
+
+
+
             try:
-                # the status line promises 3 s to point at the target
-                # app - sleep HERE, in the worker, so the window stays
-                # responsive while the aim time runs down (and so the
-                # sample never catches our own settings window)
+
+
+
+
                 time.sleep(3.0)
                 x, y = get_cursor_pos()
                 vx, vy, vw, vh = virtual_screen()
@@ -3784,8 +4316,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 top = max(vy, min(y - h // 2, vy + vh - h))
                 img = app._capture.grab(left, top, left + w, top + h)
                 if img is None:
-                    # a static desktop hands dxcam no new frame at
-                    # all: one patient retry before giving up
+
+
                     time.sleep(0.3)
                     img = app._capture.grab(left, top, left + w,
                                             top + h)
@@ -3794,23 +4326,24 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                         i18n.L("st.pick_fail")))
                     return
                 sug = vision.suggest_accents(img, SUG_N)
-                root.after(0, lambda: _show_suggestions(sug))
+                try:
+                    root.after(0, lambda: _show_suggestions(sug))
+                except Exception:
+                    pass
             except Exception as exc:
-                # Eager default-arg capture: Python deletes an
-                # `except ... as` name when the block exits, so a bare
-                # closure over exc would raise NameError when the
-                # deferred callback finally runs (exactly when the
-                # error report matters most).
-                root.after(0, lambda exc=exc: status_msg(
-                    i18n.L("st.sug_fail", exc)))
+                try:
+                    root.after(0, lambda exc=exc: status_msg(
+                        i18n.L("st.sug_fail", exc)))
+                except Exception:
+                    pass
 
         threading.Thread(target=work, daemon=True,
                          name="snappy-suggest").start()
 
-    # v8.41: the suggest button lives in the screen row, beside the
-    # picker button - one row for everything taken from the screen.
-    # v8.45: same fixed size as the other three, so the row spans the
-    # 15-box grid exactly like the add row above it.
+
+
+
+
     _b_sug = kit.button(auto_row, i18n.L("col.suggest"),
                         suggest_from_screen, fixed_w=BTN_W)
     _b_sug.pack(side="left", padx=(BTN_GAP // 2, PRESET_PAD))
@@ -3821,102 +4354,37 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     render_sv()
     entries_changed()
 
-    _wrapping_note(cp, kit, pal, "note.colors")
 
-    # v8.40: the Keybindings tab explains itself.  Shortcut rows on
-    # top (the settings), then what the two modes do, how recordings
-    # work and how single keys differ from combos, then the tab note -
-    # the page scrolls because prose plus twelve rows no longer fits.
-    # NB: the SLUG is "hotkeys" (only the display name is
-    # "Keybindings"), so the page lives at pages["hotkeys"].
-    kbp = pages["hotkeys"]
-    kinner, kbind = _scrollable(kbp, kit, pal)
-    kgrid = tk.Frame(kinner, bg=pal["card"])
-    kit.reg(kgrid, "card")
-    kgrid.pack(fill="x", padx=6, pady=8)
-    kgrid.columnconfigure(0, weight=1)
-    for _ki, _kkey in enumerate(TAB_KEYS):
-        make_row(kgrid, _kkey, _ki)
 
-    def _kb_block(title_key, body_key):
-        h = tk.Label(kinner, text=i18n.L(title_key), font=F_BOLD,
-                     bg=pal["card"], fg=pal["text"], anchor="w")
-        kit.reg(h, "card_bold")
-        h.pack(fill="x", padx=14, pady=(12, 2))
-        kbind(h)
-        R(lambda: h.configure(text=i18n.L(title_key)) if _live(h)
-          else False)
-        b = tk.Label(kinner, text=i18n.L(body_key), font=F_DESC,
-                     bg=pal["card"], fg=pal["muted"], anchor="w",
-                     justify="left")
-        kit.reg(b, "card_muted")
-        b.pack(fill="x", padx=14, pady=(0, 2))
-        kbind(b)
-        R(lambda: b.configure(text=i18n.L(body_key)) if _live(b)
-          else False)
-        return b
 
-    _kb_blocks = [_kb_block(t, b) for t, b in KB_KEYS]
 
-    def _kb_wrap(_event=None):
-        try:
-            want = max(200, kinner.winfo_width() - 32)
-            for lb in _kb_blocks:
-                if str(lb.cget("wraplength")) != str(want):
-                    lb.configure(wraplength=want)
-        except tk.TclError:
-            pass
 
-    kinner.bind("<Configure>", _kb_wrap, add="+")
-    _kb_wrap()
-    _wrapping_note(kinner, kit, pal, "note.keybindings")
 
-    # ---------------- Macros (v8.46) ----------------
-    # Two columns. LEFT: the five KEY MACROS - one blocked trigger ->
-    # one combo press; the per-row "one press, trigger blocked" hint is
-    # gone (the tab note says it once). RIGHT: the recorder library in
-    # a compact bordered box - FIVE recordings is the cap (Ctrl+1..5
-    # launch them by list position), so the old full-height listbox
-    # shrank to a fixed five-row window that sits BESIDE the macros.
-    # Every recording row carries its OWN "Repeat until stopped" pill
-    # switch (the Assistance tab's control; the switch column is only
-    # visible once at least one recording exists), Rename / Export /
-    # Import / Delete sit side by side in the box's bottom-right
-    # corner, and clicking a row selects that recording for those
-    # buttons and the play shortcut. Since v8.46 a recording captures
-    # EVERYTHING: every key, every mouse button and the cursor trail.
-    mac = pages["macros"]
-    mbody = tk.Frame(mac, bg=pal["card"])
-    kit.reg(mbody, "card")
-    mbody.pack(fill="x", padx=14, pady=8)
 
     def mac_head(parent, key):
-        """One column heading; re-words itself on a language switch."""
         h = tk.Label(parent, text=i18n.L(key), font=F_BOLD,
                      bg=pal["card"], fg=pal["text"], anchor="w")
         kit.reg(h, "card_bold")
-        h.pack(fill="x", pady=(0, 6))
+        h.pack(fill="x", pady=(10, 6))
         R(lambda h=h, k=key: h.configure(text=i18n.L(k))
           if _live(h) else False)
-        h.bind("<Enter>", lambda e: set_desc(
-            lambda: i18n.L("note.macros")))
-        h.bind("<Leave>", lambda e: set_desc(None))
         return h
 
-    # ---- left column: the five key macros ----------------------------
-    mleft = tk.Frame(mbody, bg=pal["card"])
-    kit.reg(mleft, "card")
-    mleft.pack(side="left", fill="y")
-    mac_head(mleft, "mac.keys_head")
-
-    def macro_entry(parent, key, width, desc_key):
+    def macro_entry(parent, key, width, desc_key, kind=None):
+        """One macro field. With a capture `kind` it comes back wrapped in a
+        frame holding the entry AND its "Press" button, so the caller's
+        .pack(side="left") places the pair without knowing about it."""
         if key not in vars_:
             var = tk.StringVar(value=str(cfg.get(key)))
             vars_[key] = ("str", var)
             var.trace_add("write", mark_dirty)
         else:
             var = vars_[key][1]
-        en = tk.Entry(parent, textvariable=var, width=width,
+        host = parent
+        if kind in CAPTURE_KINDS:
+            host = tk.Frame(parent, bg=pal["card"])
+            kit.reg(host, "card")
+        en = tk.Entry(host, textvariable=var, width=width,
                       font=F_ENTRY, relief="solid", borderwidth=1,
                       bg=pal["entry"], fg=pal["text"],
                       insertbackground=pal["text"],
@@ -3926,7 +4394,12 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         en.bind("<Enter>", lambda e, k=desc_key: set_desc(
             lambda: tr_desc(k)))
         en.bind("<Leave>", lambda e: set_desc(None))
-        return en
+        if kind not in CAPTURE_KINDS:
+            return en
+        en.pack(side="left")
+        capture_button(host, kit, root, app, key, var, kind,
+                       status_msg, R).pack(side="left", fill="y", padx=(4, 0))
+        return host
 
     def macro_word(parent, key, desc_key):
         w = tk.Label(parent, text=i18n.L(key), font=F_DESC,
@@ -3939,6 +4412,54 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         w.bind("<Leave>", lambda e: set_desc(None))
         return w
 
+    # ---- Keyboard & Mouse tab and Controller tab: flat rows, no titles ----
+    kbp = pages["keyboard"]
+    kinner, kbind = _scrollable(kbp, kit, pal)
+    _FIT.append(kinner)
+    kgrid = tk.Frame(kinner, bg=pal["card"])
+    kit.reg(kgrid, "card")
+    kgrid.pack(fill="x", padx=6, pady=8)
+    kgrid.columnconfigure(0, weight=1)
+    for _ki, _kkey in enumerate(TAB_KEYBOARD):
+        make_row(kgrid, _kkey, _ki)
+
+    # ---- Controller tab ----
+    ctrlp = pages["controller"]
+    cinner, cbind = _scrollable(ctrlp, kit, pal)
+    _FIT.append(cinner)
+    cgrid = tk.Frame(cinner, bg=pal["card"])
+    kit.reg(cgrid, "card")
+    cgrid.pack(fill="x", padx=6, pady=8)
+    cgrid.columnconfigure(0, weight=1)
+    for _pi, _pkey in enumerate(TAB_CONTROLLER):
+        make_row(cgrid, _pkey, _pi)
+
+    # ---- Macros tab: two rows, each pairing one macro family (left) with
+    #      its own independent recording library (right), top-aligned -
+    #      keyboard macros + Recordings on top, controller macros +
+    #      Controller Recordings below ----
+    macp = pages["macros"]
+    macinner, macbind = _scrollable(macp, kit, pal)
+    _FIT.append(macinner)
+    mbody = tk.Frame(macinner, bg=pal["card"])
+    kit.reg(mbody, "card")
+    mbody.pack(fill="both", expand=True, padx=14, pady=8)
+
+    mtop = tk.Frame(mbody, bg=pal["card"])
+    kit.reg(mtop, "card")
+    mtop.pack(fill="x")
+    mtop.columnconfigure(0, weight=1, uniform="macrow")
+    mtop.columnconfigure(1, weight=1, uniform="macrow")
+    mbot = tk.Frame(mbody, bg=pal["card"])
+    kit.reg(mbot, "card")
+    mbot.pack(fill="x", pady=(16, 0))
+    mbot.columnconfigure(0, weight=1, uniform="macrow")
+    mbot.columnconfigure(1, weight=1, uniform="macrow")
+
+    mleft = tk.Frame(mtop, bg=pal["card"])
+    kit.reg(mleft, "card")
+    mleft.grid(row=0, column=0, sticky="nw")
+    mac_head(mleft, "mac.keys_head")
     for i in range(1, MACRO_SLOTS + 1):
         row = tk.Frame(mleft, bg=pal["card"])
         kit.reg(row, "card")
@@ -3957,34 +4478,56 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             lambda: tr_desc(k)))
         lb.bind("<Leave>", lambda e: set_desc(None))
 
-        macro_entry(row, mkey, 10, mkey).pack(side="left", padx=(0, 8))
+        macro_entry(row, mkey, 10, mkey, "key").pack(side="left",
+                                                     padx=(0, 8))
         macro_word(row, "mac.sends", mact)
-        macro_entry(row, mact, 16, mact).pack(side="left")
+        macro_entry(row, mact, 13, mact, "key").pack(side="left")
 
-    # ---- right column: the recorder library box ----------------------
-    mright = tk.Frame(mbody, bg=pal["card"])
+    cleft = tk.Frame(mbot, bg=pal["card"])
+    kit.reg(cleft, "card")
+    cleft.grid(row=0, column=0, sticky="nw")
+    mac_head(cleft, "mac.pad_head")
+    for i in range(1, MACRO_SLOTS + 1):
+        prow = tk.Frame(cleft, bg=pal["card"])
+        kit.reg(prow, "card")
+        prow.pack(fill="x", pady=6)
+
+        plb = tk.Label(prow, text=i18n.L("mac.pad_row", i), font=F_BOLD,
+                       width=8, bg=pal["card"], fg=pal["text"], anchor="w")
+        kit.reg(plb, "card_bold")
+        plb.pack(side="left")
+        R(lambda l=plb, n=i: l.configure(text=i18n.L("mac.pad_row", n))
+          if _live(l) else False)
+        pkey = "pad_macro%d_key" % i
+        pact = "pad_macro%d_action" % i
+        plb.bind("<Enter>", lambda e, k=pkey: set_desc(lambda: tr_desc(k)))
+        plb.bind("<Leave>", lambda e: set_desc(None))
+
+        macro_entry(prow, pkey, 10, pkey, "pad").pack(side="left",
+                                                     padx=(0, 8))
+        macro_word(prow, "mac.sends", pact)
+        macro_entry(prow, pact, 13, pact, "padkey").pack(side="left")
+
+    mright = tk.Frame(mtop, bg=pal["card"])
     kit.reg(mright, "card")
-    mright.pack(side="left", fill="both", expand=True, padx=(24, 0))
+    mright.grid(row=0, column=1, sticky="nsew", padx=(24, 0))
     mac_head(mright, "mac.recordings")
 
-    rec_state = tk.StringVar(value="")
-    rec_lbl = tk.Label(mright, textvariable=rec_state, font=F_DESC,
-                       bg=pal["card"], fg=pal["muted"], anchor="w",
-                       justify="left")
-    kit.reg(rec_lbl, "card_muted")
-    rec_lbl.pack(fill="x", pady=(0, 6))
+    pright = tk.Frame(mbot, bg=pal["card"])
+    kit.reg(pright, "card")
+    pright.grid(row=0, column=1, sticky="nsew", padx=(24, 0))
 
-    REC_ROW_H = 26                       # one recording row's height
+    REC_ROW_H = 26
     rec_box = tk.Frame(mright, bg=pal["card"], highlightthickness=1,
                        highlightbackground=pal["entry_bd"],
                        highlightcolor=pal["entry_bd"])
     kit.reg(rec_box, "panel")
-    rec_box.pack(fill="x")
+    rec_box.pack(fill="both", expand=True, pady=(6, 6))
 
-    # Pack order inside the box: the button row reserves the BOTTOM
-    # first, the rows area fills what is left, and the switch-column
-    # caption packs itself above the rows (only while recordings
-    # exist) when the library rebuilds.
+
+
+
+
     btn_row = tk.Frame(rec_box, bg=pal["card"])
     kit.reg(btn_row, "card")
     btn_row.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
@@ -4003,14 +4546,13 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     kit.reg(rec_rows, "card")
     rec_rows.pack(side="top", fill="both", expand=True,
                   padx=6, pady=(0, 2))
-    rec_rows.pack_propagate(False)
     rec_rows.configure(height=REC_ROW_H * REC_PLAY_SLOTS)
 
     rec_ids = []
-    rec_row_w = []          # [(rid, frame, [widgets wearing the row bg])]
-    rec_row_paints = []     # the rows' switch repaint callbacks
+    rec_row_w = []
+    rec_row_paints = []
     sel_rid = [None]
-    rec_ph = [None]         # the empty-library placeholder label
+    rec_ph = [None]
 
     def selected_rid():
         rid = sel_rid[0]
@@ -4043,7 +4585,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         fr = tk.Frame(rec_rows, bg=bg, cursor="hand2")
         fr.pack(fill="x", pady=1)
 
-        # the row's OWN repeat switch (independent per recording)
+
         var = tk.BooleanVar(value=bool(rec["loop"]))
         sw = kit.bool_switch(fr, var, word=True)
         sw.pack(side="right", padx=(6, 6))
@@ -4054,7 +4596,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             except (tk.TclError, ValueError):
                 on = False
             if app.rec_store.set_loop(rid, on):
-                app.rec_store.save()
                 status_msg(i18n.L(
                     "st.rec_now", rec["name"],
                     i18n.L("st.rec_repeats") if on
@@ -4085,8 +4626,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         rec_row_w.append((rid, fr, [fr, num, name, st_lbl] + sw_widgets))
 
     def _ph_fit(_event=None):
-        """Wrap the empty-library placeholder to the row area's live
-        width (garbage-safe: winfo_width is 1 before the first map)."""
         ph = rec_ph[0]
         if ph is None or not _live(ph):
             return
@@ -4113,7 +4652,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         if new is None:
             return
         if app.rec_store.set_name(rid, new):
-            app.rec_store.save()
             rebuild_recs()
             status_msg(i18n.L("st.renamed"))
         else:
@@ -4131,24 +4669,21 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                 parent=root):
             return
         app.rec_store.remove(rid)
-        app.rec_store.save()
         if sel_rid[0] == rid:
             sel_rid[0] = None
         rebuild_recs()
         status_msg(i18n.L("st.deleted"))
 
     def _safe_filename(name):
-        """A save-dialog initial filename built from the recording's
-        name - cross-platform-safe characters only."""
         safe = "".join(c if (c.isalnum() or c in " -_") else "_"
                        for c in str(name)).strip(" -_")
         return (safe[:40] or "recording") + ".json"
 
     def do_export_rec():
-        # v8.46 fix: Export saves the recording the user CLICKED (its
-        # row selection), and the dialog is owned by the main window -
-        # unowned dialogs could open behind it, which read as "Export
-        # does nothing".
+
+
+
+
         rid = selected_rid()
         rec = app.rec_store.get(rid) if rid is not None else None
         if rec is None:
@@ -4178,9 +4713,9 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         rebuild_recs()
         status_msg(text)
 
-    # The four library buttons in the box's bottom-right corner, side
-    # by side; packed right-first, so they READ Rename | Export |
-    # Import | Delete with Delete (amber) on the far right.
+
+
+
     for _rk, _rf, _kd in (("mac.delete", do_delete_rec, "amber"),
                           ("mac.import", do_import_rec, "plain"),
                           ("mac.export", do_export_rec, "plain"),
@@ -4191,11 +4726,6 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
           if _live(b) else False)
 
     def rebuild_recs():
-        """Rebuild the five-row library: the poller calls this when the
-        store/engine moved, and theme and language switches call it
-        through kit.repaint / R.  Rows are transient widgets; their
-        switch repaint callbacks are pruned here so kit.repaints can
-        never grow without bound."""
         if not _live(rec_rows):
             return False
         for fn in rec_row_paints:
@@ -4224,8 +4754,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
 
         n0 = len(kit.repaints)
         if rec_ids:
-            # the switch column's caption is only visible once at
-            # least one recording exists (v8.46, owner rule 4)
+
+
             loop_head.pack(side="top", fill="x", padx=8, pady=(6, 2),
                            before=rec_rows)
             for n, r in enumerate(app.rec_store.recordings, 1):
@@ -4241,98 +4771,328 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             _ph_fit()
         rec_row_paints[:] = kit.repaints[n0:]
         paint_rows()
-
-        recording = app._rec_buffer is not None
-        playing = app._play_busy
-        looping = playing and app._play_looping
-        pname = ""
-        if app._play_rid is not None:
-            pr = app.rec_store.get(app._play_rid)
-            pname = pr["name"] if pr else ""
-        if recording:
-            rec_state.set(i18n.L(
-                "st.rec_recording",
-                str(cfg.get("key_record_stop", "ctrl+alt+s")).lower()))
-        elif looping:
-            rec_state.set(i18n.L("st.rec_playing_loop", pname))
-        elif playing:
-            rec_state.set(i18n.L("st.rec_playing", pname))
-        else:
-            rec_state.set(i18n.L("st.rec_count", len(rec_ids)))
         return True
 
-    # a language switch rebuilds the rows in the new wording
+
     R(lambda: rebuild_recs() if _live(rec_rows) else False)
     kit.repaint(rebuild_recs)
     rebuild_recs()
 
-    _wrapping_note(mac, kit, pal, "note.macros", pady=(8, 2), padx=16)
-    _wrapping_note(mac, kit, pal, "note.macros_keys", pady=(2, 2),
-                   padx=16)
+    mac_head(pright, "mac.pad_recordings")
 
-    # ---------------- Advanced ----------------
-    # v8.27: EVERY remaining value option lived here; v8.39 made it a
-    # single left-aligned column of geometry/timing values - the size
-    # and contrast gates moved to Handler, the dropdowns to
-    # Experimental, the switches stay on Assistance.
+    prec_box = tk.Frame(pright, bg=pal["card"], highlightthickness=1,
+                        highlightbackground=pal["entry_bd"],
+                        highlightcolor=pal["entry_bd"])
+    kit.reg(prec_box, "panel")
+    prec_box.pack(fill="both", expand=True, pady=(6, 6))
+
+    pbtn_row = tk.Frame(prec_box, bg=pal["card"])
+    kit.reg(pbtn_row, "card")
+    pbtn_row.pack(side="bottom", fill="x", padx=8, pady=(4, 8))
+
+    ploop_head = tk.Label(prec_box, text=i18n.L("mac.loop"),
+                          font=F_DESC, bg=pal["card"], fg=pal["muted"],
+                          anchor="e")
+    kit.reg(ploop_head, "card_muted")
+    R(lambda: ploop_head.configure(text=i18n.L("mac.loop"))
+      if _live(ploop_head) else False)
+    ploop_head.bind("<Enter>", lambda e: set_desc(
+        lambda: i18n.L("st.loop_desc")))
+    ploop_head.bind("<Leave>", lambda e: set_desc(None))
+
+    prec_rows = tk.Frame(prec_box, bg=pal["card"])
+    kit.reg(prec_rows, "card")
+    prec_rows.pack(side="top", fill="both", expand=True,
+                   padx=6, pady=(0, 2))
+    prec_rows.configure(height=REC_ROW_H * REC_PLAY_SLOTS)
+
+    prec_ids = []
+    prec_row_w = []
+    prec_row_paints = []
+    psel_rid = [None]
+    prec_ph = [None]
+
+    def pselected_rid():
+        rid = psel_rid[0]
+        return rid if rid in prec_ids else None
+
+    def ppaint_rows():
+        sel = pselected_rid()
+        for r_id, _fr, ws in prec_row_w:
+            on = (r_id == sel)
+            bg = pal["light_bg"] if on else pal["card"]
+            for w in ws:
+                try:
+                    w.configure(bg=bg)
+                except tk.TclError:
+                    pass
+            try:
+                ws[1].configure(fg=pal["accent"] if on
+                                else pal["text"])
+            except tk.TclError:
+                pass
+
+    def pselect_rec(rid, _event=None):
+        psel_rid[0] = rid
+        app.set_play_target_pad(rid)
+        ppaint_rows()
+
+    def pmake_rec_row(n, rec):
+        rid = rec["id"]
+        bg = pal["light_bg"] if rid == pselected_rid() else pal["card"]
+        fr = tk.Frame(prec_rows, bg=bg, cursor="hand2")
+        fr.pack(fill="x", pady=1)
+
+        var = tk.BooleanVar(value=bool(rec["loop"]))
+        sw = kit.bool_switch(fr, var, word=True)
+        sw.pack(side="right", padx=(6, 6))
+
+        def on_toggle(*_a):
+            try:
+                on = bool(var.get())
+            except (tk.TclError, ValueError):
+                on = False
+            if app.rec_store_pad.set_loop(rid, on):
+                status_msg(i18n.L(
+                    "st.rec_now", rec["name"],
+                    i18n.L("st.rec_repeats") if on
+                    else i18n.L("st.rec_once")))
+        var.trace_add("write", on_toggle)
+
+        st_lbl = tk.Label(fr, text=i18n.L("mac.steps", len(rec["steps"])),
+                          font=F_DESC, bg=bg, fg=pal["muted"])
+        st_lbl.pack(side="right", padx=(8, 0))
+        num = tk.Label(fr, text="%d." % n, font=F_BOLD, width=3,
+                       bg=bg, fg=pal["text"], anchor="w")
+        num.pack(side="left")
+        name = tk.Label(fr, text=rec["name"], font=F_BASE, bg=bg,
+                        fg=pal["text"], anchor="w")
+        name.pack(side="left", fill="x", expand=True, padx=(2, 6))
+
+        for w in (fr, num, name, st_lbl):
+            w.bind("<Button-1>", lambda e, r=rid: pselect_rec(r))
+        sw_widgets = [sw] + list(sw.winfo_children())
+        for w in sw_widgets:
+            try:
+                w.configure(bg=bg)
+            except tk.TclError:
+                pass
+            w.bind("<Enter>", lambda e: set_desc(
+                lambda: i18n.L("st.loop_desc")))
+            w.bind("<Leave>", lambda e: set_desc(None))
+        prec_row_w.append((rid, fr, [fr, num, name, st_lbl] + sw_widgets))
+
+    def _pph_fit(_event=None):
+        ph = prec_ph[0]
+        if ph is None or not _live(ph):
+            return
+        try:
+            want = prec_rows.winfo_width() - 20
+            if want > 120 and str(ph.cget("wraplength")) != str(want):
+                ph.configure(wraplength=want)
+        except tk.TclError:
+            pass
+
+    prec_rows.bind("<Configure>", _pph_fit)
+
+    def pdo_rename_rec():
+        rid = pselected_rid()
+        rec = app.rec_store_pad.get(rid) if rid is not None else None
+        if rec is None:
+            status_msg(i18n.L("st.select_rec") if prec_ids
+                       else i18n.L("st.lib_empty"))
+            return
+        position = prec_ids.index(rid) + 1
+        new = simpledialog.askstring(
+            APP_NAME, i18n.L("st.rename_prompt", position),
+            initialvalue=rec["name"], parent=root)
+        if new is None:
+            return
+        if app.rec_store_pad.set_name(rid, new):
+            rebuild_precs()
+            status_msg(i18n.L("st.renamed"))
+        else:
+            status_msg(i18n.L("st.name_empty"))
+
+    def pdo_delete_rec():
+        rid = pselected_rid()
+        rec = app.rec_store_pad.get(rid) if rid is not None else None
+        if rec is None:
+            status_msg(i18n.L("st.select_rec") if prec_ids
+                       else i18n.L("st.lib_empty"))
+            return
+        if not messagebox.askyesno(
+                APP_NAME, i18n.L("st.delete_confirm", rec["name"]),
+                parent=root):
+            return
+        app.rec_store_pad.remove(rid)
+        if psel_rid[0] == rid:
+            psel_rid[0] = None
+        rebuild_precs()
+        status_msg(i18n.L("st.deleted"))
+
+    def pdo_export_rec():
+        rid = pselected_rid()
+        rec = app.rec_store_pad.get(rid) if rid is not None else None
+        if rec is None:
+            status_msg(i18n.L("st.select_rec") if prec_ids
+                       else i18n.L("st.lib_empty"))
+            return
+        path = filedialog.asksaveasfilename(
+            parent=root,
+            title=i18n.L("st.export_rec_title"),
+            initialfile=_safe_filename(rec["name"]),
+            defaultextension=".json",
+            filetypes=[(i18n.L("st.file_rec"), "*.json")])
+        if not path:
+            return
+        _ok, text = app.rec_store_pad.export_to(path, rid)
+        status_msg(text)
+
+    def pdo_import_rec():
+        path = filedialog.askopenfilename(
+            parent=root,
+            title=i18n.L("st.import_rec_title"),
+            filetypes=[(i18n.L("st.file_rec"), "*.json"),
+                       (i18n.L("st.all_files"), "*.*")])
+        if not path:
+            return
+        _ok, text = app.rec_store_pad.import_from(path)
+        rebuild_precs()
+        status_msg(text)
+
+    for _rk, _rf, _kd in (("mac.delete", pdo_delete_rec, "amber"),
+                          ("mac.import", pdo_import_rec, "plain"),
+                          ("mac.export", pdo_export_rec, "plain"),
+                          ("mac.rename", pdo_rename_rec, "plain")):
+        _b = kit.button(pbtn_row, i18n.L(_rk), _rf, kind=_kd)
+        _b.pack(side="right", padx=(6, 0))
+        R(lambda b=_b, k=_rk: kit.set_text(b, i18n.L(k))
+          if _live(b) else False)
+
+    def rebuild_precs():
+        if not _live(prec_rows):
+            return False
+        for fn in prec_row_paints:
+            try:
+                kit.repaints.remove(fn)
+            except ValueError:
+                pass
+        del prec_row_paints[:]
+        for _rid, fr, _ws in prec_row_w:
+            try:
+                fr.destroy()
+            except tk.TclError:
+                pass
+        del prec_row_w[:]
+        ph = prec_ph[0]
+        if ph is not None:
+            try:
+                ph.destroy()
+            except tk.TclError:
+                pass
+            prec_ph[0] = None
+
+        prec_ids[:] = [r["id"] for r in app.rec_store_pad.recordings]
+        if pselected_rid() is None:
+            psel_rid[0] = None
+
+        n0 = len(kit.repaints)
+        if prec_ids:
+            ploop_head.pack(side="top", fill="x", padx=8, pady=(6, 2),
+                            before=prec_rows)
+            for n, r in enumerate(app.rec_store_pad.recordings, 1):
+                pmake_rec_row(n, r)
+        else:
+            ploop_head.pack_forget()
+            ph = tk.Label(prec_rows, text=i18n.L("mac.empty"),
+                          font=F_DESC, bg=pal["card"], fg=pal["muted"],
+                          anchor="w", justify="left", wraplength=360)
+            kit.reg(ph, "card_muted")
+            ph.pack(fill="both", expand=True, padx=10, pady=6)
+            prec_ph[0] = ph
+            _pph_fit()
+        prec_row_paints[:] = kit.repaints[n0:]
+        ppaint_rows()
+        return True
+
+    R(lambda: rebuild_precs() if _live(prec_rows) else False)
+    kit.repaint(rebuild_precs)
+    rebuild_precs()
+
+
+
+
+
+
+
     adv = pages["advanced"]
     fill_list(adv, TAB_ADV)
-    _wrapping_note(adv, kit, pal, "note.advanced")
 
-    # ---------------- Handler (v8.38, renamed v8.39) ----------------
-    # What counts as an item: the two contrast gates, the three size
-    # gates and the three accent-matching knobs.  Single column, like
-    # every other settings tab; the adaptivity switches live on
-    # Assistance, the picker on Colors.
-    chp = pages["handler"]
-    fill_list(chp, TAB_COLOR)
-    _wrapping_note(chp, kit, pal, "note.handler")
 
-    # ---------------- Experimental (v8.38) ----------------
-    # Every "choice"/"map" setting.  Each has a tested default; the
-    # alternatives exist for A/B comparison (oklab vs hsv), special
-    # hardware (capture backends) or tuning taste (follow boost).
+
+
+
+
+    fill_list(chinner, TAB_COLOR, scroll=False)
+
+
+
+
+
     exp = pages["experimental"]
     fill_list(exp, TAB_EXPERIMENTAL)
-    _wrapping_note(exp, kit, pal, "note.experimental")
 
-    # ---------------- Help (v8.38) ----------------
-    _fill_help(pages["help"], kit, pal)
 
-    # ---------------- pollers ----------------
+    _FIT_DOC.append(_fill_help(pages["help"], kit, pal))
+
+
     poll_tick = [0]
     rec_ui = [None]
 
     def poll_status():
-        if not root.winfo_exists():
-            return
-        running = app.running
-        run_state.set(i18n.L("st.running") if running
-                      else i18n.L("st.standby"))
-        light.itemconfigure(light_dot,
-                            fill=(pal["green"] if running
-                                  else pal["amber"]))
-        poll_tick[0] += 1
-        if poll_tick[0] % 4 == 0 and not dirty["on"]:
-            refresh_fields()      # pick up hotkey-driven changes live
-        state_now = (app.rec_store.revision,
-                     app.is_recording(),
-                     app._play_busy, app._play_looping, app._play_rid)
-        if rec_ui[0] != state_now:
-            rec_ui[0] = state_now
-            rebuild_recs()        # recorder / playback / library moved
-        if time.perf_counter() > status_until[0]:
-            mem = app.follow
-            follow = ""
-            if mem.when > 0:
-                follow = i18n.L("st.follow",
-                                int(time.perf_counter() - mem.when))
-            _th = str(cfg.get("theme"))
-            status_var.set(i18n.L(
-                "st.line", app.snap_count, app.pass_count, follow,
-                i18n.L("theme." + _th) if _th in ("light", "dark")
-                else _th))
-        after_ms(500, poll_status)
+        try:
+            if not root.winfo_exists():
+                return
+            running = app.running
+            run_state.set(i18n.L("st.running") if running
+                          else i18n.L("st.standby"))
+            light.itemconfigure(light_dot,
+                                fill=(pal["green"] if running
+                                      else pal["amber"]))
+            poll_tick[0] += 1
+            if poll_tick[0] % 4 == 0 and not dirty["on"]:
+                _sync_from_cfg()
+            state_now = (app.rec_store.revision,
+                         getattr(app.rec_store_pad, "revision", 0),
+                         app.is_recording(), app.rec_source(),
+                         app._play_busy, app._play_looping, app._play_rid,
+                         app._play_source)
+            if rec_ui[0] != state_now:
+                rec_ui[0] = state_now
+                rebuild_recs()
+                rebuild_precs()
+            if time.perf_counter() > status_until[0]:
+                mem = app.follow
+                follow = ""
+                if mem.when > 0:
+                    follow = i18n.L("st.follow",
+                                    int(time.perf_counter() - mem.when))
+                _th = str(cfg.get("theme"))
+                status_var.set(i18n.L(
+                    "st.line", app.snap_count, app.pass_count, follow,
+                    i18n.L("theme." + _th) if _th in ("light", "dark")
+                    else _th))
+        except Exception as exc:
+            try:
+                log("status poll error: %r" % (exc,))
+            except Exception:
+                pass
+        finally:
+            try:
+                after_ms(500, poll_status)
+            except Exception:
+                pass
 
     shared_win = {"win": None}
 
@@ -4355,14 +5115,17 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         win.configure(background=pal["card"])
         win.resizable(False, False)
         win.transient(root)
-        win.grab_set()
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
         W2, H2 = 560, 400
         win.update_idletasks()
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry("%dx%d+%d+%d" % (W2, H2, max(0, (sw - W2) // 2),
                                       max(0, (sh - H2) // 3)))
-        # v8.47: flat themed card, same cleanup as the reject window -
-        # the blurred-logo backdrop left red blotches in the margins.
+
+
         box = tk.Frame(win, bg=pal["card"])
         kit.reg(box, "card")
         box.place(relx=0.5, rely=0.5, anchor="center")
@@ -4379,14 +5142,20 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         def recheck():
             def worker():
                 try:
-                    rows, _gen = online.fetch_entitlements(cfg)
+                    rows, gen = online.fetch_entitlements(cfg)
                 except online.OnlineError:
-                    root.after(0, lambda: status_msg(
-                        i18n.L("shared.unreachable")))
+                    try:
+                        root.after(0, lambda: status_msg(
+                            i18n.L("shared.unreachable")))
+                    except Exception:
+                        pass
                     return
                 idh = identity_hash[0]
-                shared = bool((rows.get(idh) or {}).get("shared"))
-                root.after(0, lambda: finish(not shared))
+                shared = online.row_shared(rows, idh, gen)
+                try:
+                    root.after(0, lambda: finish(not shared))
+                except Exception:
+                    pass
             threading.Thread(target=worker, daemon=True,
                              name="shared-recheck").start()
 
@@ -4413,7 +5182,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             return True
 
         R(_shared_retext)
-        # v8.40: grow for long translations instead of clipping
+
         win.update_idletasks()
         need2 = box.winfo_reqheight() + 40
         if need2 > H2:
@@ -4429,23 +5198,24 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         identity_hash[0] = online.row_hash(identity)
 
     def presence_watch():
-        """Poll the shared flag at the (fixed) heartbeat cadence.
-
-        The cadence comes from online.presence_interval_seconds(), not
-        from config: it is part of the sharing enforcement, so it is not
-        a user setting."""
-        if not root.winfo_exists():
+        try:
+            alive = root.winfo_exists()
+        except tk.TclError:
+            alive = False
+        if not alive:
             return
         def worker():
             if not identity_hash[0]:
                 return
             try:
-                rows, _gen = online.fetch_entitlements(cfg)
+                rows, gen = online.fetch_entitlements(cfg)
             except online.OnlineError:
                 return
-            shared = bool((rows.get(identity_hash[0]) or {})
-                          .get("shared"))
-            root.after(0, lambda: apply_shared(shared))
+            shared = online.row_shared(rows, identity_hash[0], gen)
+            try:
+                root.after(0, lambda: apply_shared(shared))
+            except Exception:
+                pass
         def apply_shared(shared):
             if not shared:
                 return
@@ -4462,7 +5232,11 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
              presence_watch)
 
     def watchdog():
-        if not root.winfo_exists():
+        try:
+            alive = root.winfo_exists()
+        except tk.TclError:
+            alive = False
+        if not alive:
             return
         if app.stop.is_set():
             try:
@@ -4474,37 +5248,30 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
         after_ms(250, watchdog)
 
     def entitlement_watch():
-        """Runtime re-check of the subscription (every 30 minutes).
-
-        Start-up is strict (no live answer, no engine); while running,
-        a lapsed or revoked subscription pauses assistance, and a pure
-        network blip only logs - an accessibility tool must not yank
-        the mouse away because of a router hiccup.
-        """
         def worker():
-            # v8.49: NO Tk call from this thread. `root.winfo_exists()` used
-            # to be the first statement here, which evaluates Tcl off the
-            # main thread - the one thing this file's own docstring and the
-            # comment six lines below both forbid, and the only place in
-            # gui.py that did it. It fires every 30 minutes per session and
-            # fails at interpreter level, not with a traceback, most often
-            # exactly while the window is being destroyed.
-            #
-            # The guard was also redundant: the main-thread callback below
-            # already checks winfo_exists() before spawning this worker, and
-            # every result is marshalled through root.after(0, ...), which
-            # is a no-op once the interpreter is gone.
+
+
+
+
+
+
+
+
+
+
+
+
             try:
                 ident, ent_now = online.me(cfg)
             except online.OnlineError:
                 log(i18n.L("st.ent_unreachable"))
                 return
-            # v8.34: keep the status bar's registration line current - it
-            # now carries the licence summary that used to sit in the
-            # header. Marshalled onto the Tk main loop: Tk is not
-            # thread-safe, and this runs in a worker thread. Skipped when
-            # the identity came back None (session died server-side) -
-            # the pause path below owns that case.
+
+
+
+
+
+
             if ident:
                 try:
                     root.after(0, lambda i=ident, e=ent_now:
@@ -4517,7 +5284,7 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
             state = str((ent_now or {}).get("status", "inactive"))
             if app.running:
                 post(11)
-            # Same rule: never touch a Tk variable from this thread.
+
             try:
                 root.after(0, lambda s=state: status_msg(
                     i18n.L("st.ent_paused", s)))
@@ -4529,8 +5296,8 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
                              name="entitlement-watch").start()
             after_ms(check_ms(), entitlement_watch)
 
-    # v8.27: the re-check cadence is a built-in constant - the
-    # "Subscription re-check (minutes)" setting was removed.
+
+
     def check_ms():
         return ENTITLEMENT_CHECK_MINUTES * 60000
 
@@ -4539,35 +5306,69 @@ def _run_main(cfg, identity, app, hook_thread, kit, ent=None):
     root.protocol("WM_DELETE_WINDOW",
                   lambda: (app.request_quit(), close_all("quit")))
 
+    def _fit_window():
+        """Size the window to the widest and tallest SETTINGS tab, clamped to
+        the screen, so no setting needs scrolling at the default size.
+
+        Measured rather than hardcoded: the tabs move as settings are added,
+        and a fixed number either wastes space or cuts content off. Help is
+        excluded from the height - it is prose that is meant to scroll. Called
+        twice because the tab bar's own height depends on the width it is
+        given, so the first pass can change how many rows it wraps into.
+        """
+        try:
+            sw = root.winfo_screenwidth()
+            sh = root.winfo_screenheight()
+            root.update_idletasks()
+            need_w = 0
+            need_h = 0
+            for frame in _FIT_DOC:
+                if _live(frame):
+                    need_w = max(need_w, frame.winfo_reqwidth())
+            scrolled = set()
+            for frame in _FIT:
+                if not _live(frame):
+                    continue
+                need_w = max(need_w, frame.winfo_reqwidth())
+                need_h = max(need_h, frame.winfo_reqheight())
+                parent = frame.master
+                while parent is not None and parent is not root:
+                    scrolled.add(parent)
+                    parent = getattr(parent, "master", None)
+            for pg in pages.values():
+                if not _live(pg) or pg in scrolled:
+                    continue
+                need_w = max(need_w, pg.winfo_reqwidth())
+                need_h = max(need_h, pg.winfo_reqheight())
+            chrome = 0
+            for child in root.winfo_children():
+                if child is content_host or not _live(child):
+                    continue
+                chrome += child.winfo_reqheight()
+            want_w = min(sw - 24, max(need_w + 48, 900))
+            want_h = min(sh - 48, max(need_h + chrome + 32, 600))
+            root.minsize(min(880, want_w), min(560, want_h))
+            root.geometry("%dx%d+%d+%d" % (want_w, want_h,
+                                           max(0, (sw - want_w) // 2),
+                                           max(0, (sh - want_h) // 3)))
+        except tk.TclError:
+            pass
+
     show_tab(tab_names[0])
     refresh_fields()
+    _fit_window()
+    _fit_window()
     poll_status()
     watchdog()
     log("GUI ready - signed in as %s."
         % online.identity_label(identity))
+    root.deiconify()  # show fully built window
     root.mainloop()
 
     return action["now"]
 
 
 def _gate_window(cfg, kit, identity, ent):
-    """Subscription gate for a signed-in but unsubscribed identity.
-
-    Shows the product logo on one clean themed card, the two
-    payment buttons ("Monthly
-    Subscription for 9.99 EUR" and "Trial Purchase for 1.99 EUR" -
-    each checkout binds to the PAID e-mail, which must be this
-    Discord e-mail). No manual re-check or activation buttons: the
-    window re-checks the subscription by itself every 30 seconds
-    (auto_loop), so a fresh purchase starts the engine without any
-    click. Returns True once the
-    worker reports an active entitlement; False when the window was
-    closed. The engine is never started while this window exists.
-    v8.47 dropped the blurred-logo backdrop: its red blotches showed
-    through the window margins as dirty spots, so the gate is now a
-    flat card like every other window, and refit() re-sizes the
-    frame whenever the card's text changes.
-    """
     pal = kit.pal
     result = {}
     gaids = []
@@ -4590,25 +5391,17 @@ def _gate_window(cfg, kit, identity, ent):
     kit.defocus_hook(root)
     kit.titlebar_hook(root)
 
-    # v8.47: ONE clean themed card, no backdrop image. The old
-    # blurred-logo backdrop put saturated red blotches (the snake,
-    # GaussianBlur 14) behind the centred card: whatever peeked out
-    # at the window sides read as dirty spots and texture, and the
-    # flat margins around it as dead areas. A flat card cannot go
-    # stale on a theme switch and needs no re-render on a resize.
+
+
+
+
+
+
     box = tk.Frame(root, bg=pal["card"])
     kit.reg(box, "card")
     box.place(relx=0.5, rely=0.5, anchor="center")
 
     def refit():
-        """Re-size the window to the card it carries (v8.47).
-
-        Translated text wraps differently in every locale and the
-        language can be switched WHILE this window is open (the
-        Language button lives on the card), so a fixed frame would
-        clip a tall card at both ends. With no backdrop image left
-        there is nothing to regenerate: one geometry call re-fits
-        the window, width included, and re-centres it."""
         nonlocal W, H
         try:
             root.update_idletasks()
@@ -4622,11 +5415,11 @@ def _gate_window(cfg, kit, identity, ent):
         except Exception:
             pass
 
-    # v8.28: the rejection page carries the same crisp logo as the
-    # sign-in window, above the title. Composited onto the LIVE card
-    # colour and recomposited on every theme switch - Tk on Windows
-    # ignores PNG alpha, so a transparent paste would show a white
-    # square around the snake on the dark theme.
+
+
+
+
+
     lg = tk.Label(box, bg=pal["card"])
     kit.reg(lg, "card")
     lim = logo.surface_image(tk, 96, _surf_of(lg, pal["card"]))
@@ -4646,28 +5439,29 @@ def _gate_window(cfg, kit, identity, ent):
     kit.reg(t, "card_text")
     t.pack(pady=(2, 2))
 
-    def head_for(ent_now):
-        state = str((ent_now or {}).get("status", "unsubscribed"))
-        if (ent_now or {}).get("shared"):
-            return i18n.L("gate.head.shared")
+    def title_for(ent_now):
+        ent_now = ent_now or {}
+        state = str(ent_now.get("status", "unsubscribed"))
+        try:
+            until = float(ent_now.get("until") or 0)
+        except (TypeError, ValueError):
+            until = 0.0
+        if ent_now.get("shared"):
+            return i18n.L("gate.title.shared")
         if state == "refunded":
-            return i18n.L("gate.head.refunded")
+            return i18n.L("gate.title.refunded")
         if state == "canceling":
-            return i18n.L("gate.head.canceling",
-                          time.strftime("%Y-%m-%d",
-                                        time.gmtime(int(ent_now.get("until")
-                                                        or 0))))
-        if state == "email_mismatch":
-            return i18n.L("gate.head.email_mismatch")
-        if state == "expired":
-            return i18n.L("gate.head.expired")
+            return i18n.L("gate.title.canceling",
+                          time.strftime("%Y-%m-%d", time.gmtime(until)))
         if state == "past_due":
-            return i18n.L("gate.head.past_due")
+            return i18n.L("gate.title.past_due")
         if state == "canceled":
-            return i18n.L("gate.head.canceled")
-        return i18n.L("gate.head.none")
+            return i18n.L("gate.title.canceled")
+        if until and until <= time.time():
+            return i18n.L("gate.title.expired")
+        return i18n.L("gate.title.none")
 
-    h1 = tk.Label(box, text=head_for(ent), font=F_BOLD, bg=pal["card"],
+    h1 = tk.Label(box, text=title_for(ent), font=F_BOLD, bg=pal["card"],
                   fg=pal["text"], wraplength=460, justify="center")
     kit.reg(h1, "card_bold")
     h1.pack(pady=(6, 2))
@@ -4714,19 +5508,20 @@ def _gate_window(cfg, kit, identity, ent):
             set_msg(i18n.L("gate.msg.open_fail", url))
 
     def do_recheck(_event=None, silent=True):
-        """Silent entitlement re-check. The gate has no buttons any
-        more - auto_loop drives this every 30 seconds, so a finished
-        payment starts the engine without a click (_event may still be
-        a Tk event object)."""
         def worker():
+            if not silent:
+                online.nudge_publisher(cfg)
             try:
-                # the silent 30 s auto re-check shares the CDN bucket
-                # with everyone else
+
+
                 ident, ent_now = online.me(cfg, fresh=False)
                 err = None
             except online.OnlineError as exc:
                 ident, ent_now, err = None, None, str(exc)
-            root.after(0, lambda: checked(ident, ent_now, err))
+            try:
+                root.after(0, lambda: checked(ident, ent_now, err))
+            except Exception:
+                pass
 
         threading.Thread(target=worker, daemon=True,
                          name="entitlement-recheck").start()
@@ -4740,14 +5535,14 @@ def _gate_window(cfg, kit, identity, ent):
             root.after(600, root.destroy)
             return
         ent_cur[0] = ent_now
-        h1.configure(text=head_for(ent_now))
+        h1.configure(text=title_for(ent_now))
         sum_lbl.configure(text=online.entitlement_summary(ent_now))
-        # `shared` is part of the gate, exactly as it is in run_gui
-        # and both console paths. Testing only
-        # entitlement_active() here let an ACTIVE-BUT-SHARED account
-        # through on the 30 s auto re-check - the window said
-        # "Subscription active - starting Snappy AI..." while its own
-        # header said "in use on ANOTHER computer right now".
+
+
+
+
+
+
         if online.entitlement_active(ent_now) and not ent_now.get("shared"):
             result["ok"] = True
             set_msg(i18n.L("gate.msg.active"), ok=True)
@@ -4768,14 +5563,12 @@ def _gate_window(cfg, kit, identity, ent):
     def _gate_retext():
         if not _live(box):
             return False
-        h1.configure(text=head_for(ent_cur[0]))
+        h1.configure(text=title_for(ent_cur[0]))
         h2.configure(text=i18n.L("gate.prices"))
         note.configure(text=i18n.L("gate.note"))
         kit.set_text(sub_btn, i18n.L("gate.btn.monthly"))
         kit.set_text(tri_btn, i18n.L("gate.btn.trial"))
-        kit.set_text(_g_lang, i18n.L(
-            "btn.language", i18n.native_name(i18n.current())))
-        refit()          # v8.47: new text, new card size, new frame
+        refit()
         return True
 
     pay_btns = []
@@ -4784,23 +5577,15 @@ def _gate_window(cfg, kit, identity, ent):
                          kind="accent", big=True)
     sub_btn.pack(pady=(0, 6))
     pay_btns.append(sub_btn)
-    # The trial is part of the offer, so its button is ALWAYS shown -
-    # an unset stripe_trial_link explains itself on click instead of
-    # silently hiding the cheaper entry point.
+
+
+
     tri_btn = kit.button(box, i18n.L("gate.btn.trial"),
                          lambda: do_subscribe("trial"),
                          kind="green", big=True)
     tri_btn.pack(pady=(0, 6))
     pay_btns.append(tri_btn)
-    # The manual "Re-check now" and "I paid - activate now" buttons
-    # are gone: auto_loop below re-checks the entitlement silently
-    # every 30 seconds, so a finished payment starts the engine
-    # without any click.
 
-    _g_lang = kit.button(box, i18n.L(
-        "btn.language", i18n.native_name(i18n.current())),
-        lambda: _language_window(cfg, kit, root))
-    _g_lang.pack(pady=(0, 6))
     root.update_idletasks()
     bw = max([b.winfo_width() for b in pay_btns] + [300])
     for b in pay_btns:
@@ -4821,11 +5606,11 @@ def _gate_window(cfg, kit, identity, ent):
     kit.reg(note, "card_muted")
     note.pack(pady=(4, 14))
 
-    # v8.26: the offer is two payment buttons. The box is centred, so
-    # an over-tall box spills out of a fixed-height window at BOTH ends
-    # (clipped title, clipped note) - size the window to the content
-    # instead.  v8.47: refit() does it, width included, and runs again
-    # on every re-text.
+
+
+
+
+
     refit()
 
     R(_gate_retext)
@@ -4834,54 +5619,25 @@ def _gate_window(cfg, kit, identity, ent):
         if result.get("ok") or not root.winfo_exists():
             return
         do_recheck(silent=True)
-        # bounded, like the main window's aids: the gate can stay open for
-        # hours, and one id per 30 s is the same slow leak.
+
+
         gaids.append(root.after(30000, auto_loop))
         if len(gaids) > 32:
             del gaids[:len(gaids) - 32]
 
     gaids.append(root.after(30000, auto_loop))
-    root.bind("<Return>", do_recheck)
+    root.bind("<Return>", lambda _e: do_recheck(silent=False))
     root.protocol("WM_DELETE_WINDOW", root.destroy)
     root.mainloop()
     return bool(result.get("ok"))
 
 
 def run_gui(cfg):
-    """Sign-in -> subscription gate -> main window, in a loop.
-
-    Strict online policy (v8.22): nothing starts without a live,
-    positive answer from the auth worker. Unreachable server at start
-    = retry dialog, then exit; never a half-started engine.
-    """
-    # v8.39: the saved language is live from the first window on, and
-    # the coverage figures in the chooser need the complete key list.
-    i18n.register_keys(sorted(set(i18n.STRINGS["en"])
-                              | {label_key(k) for k in META}
-                              | {desc_key(k) for k in META}
-                              | {val_key(k, v) for k in META
-                                 if META[k][2] == "map"
-                                 for _d, v in META[k][3]}))
-    # v8.49: report catalog drift BEFORE choosing a language, because the
-    # 100% rule can silently hide every translation (see i18n.diagnose).
-    for code, cov, missing in i18n.diagnose():
-        log("i18n: %s is %.1f%% translated and therefore NOT offered - "
-            "missing %d key(s): %s%s"
-            % (code, cov * 100.0, len(missing), ", ".join(missing[:8]),
-               " ..." if len(missing) > 8 else ""))
-    stale = i18n.english_only_keys()
-    if stale:
-        log("i18n: %d English key(s) no other locale carries (%s%s) - if a "
-            "widget was redesigned, delete them from PROSE, or they will "
-            "keep every language below the 100%% bar."
-            % (len(stale), ", ".join(stale[:6]),
-               " ..." if len(stale) > 6 else ""))
-    i18n.set_language(str(cfg.get("language", "en") or "en"))
+    i18n.set_language("en")
     kit = ThemeKit(cfg)
     force_login = False
 
     def server_error(exc):
-        """Retry dialog for the strict start-up policy."""
         try:
             r = tk.Tk()
             r.withdraw()
@@ -4907,14 +5663,14 @@ def run_gui(cfg):
                     return 1
                 continue
             if identity is None:
-                online.clear_session()      # token died server-side
+                online.clear_session()
 
         if identity is None:
             identity = _login_window(cfg, kit)
             if identity is None:
                 return 0
-            # verify straight after sign-in: an account that already
-            # has an entitlement must go directly to the main window
+
+
             try:
                 identity, ent = online.me(cfg, fresh=True)
             except online.OnlineError as exc:
@@ -4923,15 +5679,15 @@ def run_gui(cfg):
                     return 1
                 continue
             if identity is None:
-                continue            # session vanished: sign in again
+                continue
         force_login = False
 
-        # Shareware gate, server-side: the engine, its hooks and its
-        # hotkeys start only for identities with an active entitlement
-        # (Stripe webhook driven). No key boxes, no offline path.
+
+
+
         if not online.entitlement_active(ent) or ent.get("shared"):
             if not _gate_window(cfg, kit, identity, ent):
-                force_login = True          # closed the gate: sign in again
+                force_login = True
                 continue
 
         app, hook_thread = start_app(cfg, identity)
@@ -4957,7 +5713,7 @@ def run_gui(cfg):
 
         if action == "logout":
             online.clear_session()
-            force_login = True              # Log Out overrides the session
+            force_login = True
             log("Signed out.")
             continue
         return 0

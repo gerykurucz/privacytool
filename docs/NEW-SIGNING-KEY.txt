@@ -1,0 +1,98 @@
+================================================================
+SnappyAI - NEW Ed25519 signing key pair  (v14 archive copy)
+Generated: 2026-10-03
+Replaces:  7Gext8qjCEKk0iYOor67Dd5BF+J9kulpjDATIgYsfxg=  (old, dead)
+================================================================
+
+This is the trust anchor between the Cloudflare Worker and your client
+app. The WORKER holds the secret half and signs entitlements.json; every
+CLIENT holds the public half (pinned) and verifies the signature.
+
+STATUS 2026-10-03: the seed below is ALREADY SAVED in your live Worker
+(publisher-simple) as ED25519_SECRET - /healthz derives the correct new
+public key from it. This file is therefore a RECOVERY COPY: the seed
+exists in exactly two places, Cloudflare (unreadable back out) and here.
+
+----------------------------------------------------------------
+1) SECRET SEED (hex)
+----------------------------------------------------------------
+
+    d88364537bbbef8a5e0c6fd4679dc2a9db709a1e86882891133550b92c7534b9
+
+Where it goes (only ever here):
+    Cloudflare dashboard -> Workers & Pages -> publisher-simple ->
+    Settings -> Variables and Secrets
+      Type:  Secret
+      Name:  ED25519_SECRET
+      Value: (the 64-character hex string above, no spaces)
+
+Same seed in base64 (only if some tool asks for base64 instead):
+
+    2INkU3u774peDG/UZ53Cqdtwmh6GiCiREzVQuSx1NLk=
+
+----------------------------------------------------------------
+2) PUBLIC KEY - NOT secret, already hardcoded everywhere
+----------------------------------------------------------------
+
+    J3Ulxeu/JPzIlGypJ28+h45rlw3aW6bJFfDu3luRGOE=
+
+You do NOT need to paste this anywhere. In THIS archive it is baked into:
+  - worker/publisher-simple/worker.js          (the file you upload)
+  - worker/publisher-simple/source/src/worker.js
+  - worker/publisher-simple/source/build-bundle.mjs
+  - worker/publisher-simple/source/wrangler.toml
+  - src/app/build_secrets.py   (_BLOB["ENTITLEMENT_PUBKEY"], XOR-encoded;
+                                check: python encode_secret.py --dump)
+Listed here only so you can recognise it (e.g. in /healthz output).
+
+----------------------------------------------------------------
+3) VERIFY (after WORKER-SETUP.md Step 3 re-uploads the current bundle)
+----------------------------------------------------------------
+
+a) Open  https://publisher-simple.snappyai.workers.dev/healthz
+   It must show:
+     "signing_key_configured": true        (already true today)
+     "pubkey_matches_expected": true       (false today ONLY because the
+                                           deployed bundle is stale; the
+                                           re-upload fixes it)
+   If pubkey_matches_expected is false AFTER the re-upload, the seed was
+   pasted wrong - re-save ED25519_SECRET from section 1.
+
+b) The live entitlements.json (once the repo exists) gets signed with the
+   NEW key automatically: first Stripe webhook, hourly cron, or force it:
+       POST https://publisher-simple.snappyai.workers.dev/admin/publish
+       header  x-admin-token: <your ADMIN_TOKEN>
+
+c) Rebuild your client exe with src/app/ from THIS archive (its pinned
+   public key is already the new one) and distribute it. Installs built
+   from the old source stop verifying the file after (b) - that is the
+   expected, planned break of this rotation.
+
+----------------------------------------------------------------
+4) IMPORTANT - old pipeline must stop
+----------------------------------------------------------------
+
+If the old GitHub Actions builder (private repo snappyai-backend,
+workflow cron */10) is still enabled, DISABLE it now (repo -> Actions ->
+the workflow -> disable, or delete the workflow file). It holds the OLD
+key and would overwrite entitlements.json with signatures your new
+clients reject. The Worker replaces it entirely. Also delete that repo's
+Actions secrets once the workflow is gone.
+
+----------------------------------------------------------------
+5) SECURITY
+----------------------------------------------------------------
+
+- Anyone holding this seed can forge an entitlements.json that EVERY
+  client accepts. Treat it like a password.
+- Once you are sure Cloudflare holds it (healthz check above), DELETE
+  every other copy of this file - including this one inside the archive
+  if you ever share or upload the archive anywhere.
+- If the seed is ever lost or leaked: generate a new pair, save it as
+  ED25519_SECRET, update the pinned key in source/src/worker.js +
+  build-bundle.mjs + wrangler.toml, run "npm run bundle", re-upload
+  worker.js, and update _BLOB["ENTITLEMENT_PUBKEY"] in
+  src/app/build_secrets.py (use src/app/encode_secret.py). Every shipped
+  client must be rebuilt with the new pin - which is why rotations
+  should be rare.
+================================================================

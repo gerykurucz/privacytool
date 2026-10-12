@@ -3,7 +3,7 @@
 //     this GENERATED file. The real source in ../src/ is type-checked
 //     (tsconfig.editorcheck.json); re-checking machine-generated code
 //     adds no safety and only produces red squiggles in the editor.
-/* =====================================================================
+/*=====================================================================
  * SnappyAI entitlement publisher — SINGLE-FILE dashboard build.
  * GENERATED FILE — do not edit by hand. Source lives in source/src/
  * (archive layout: worker/publisher-simple/source/).
@@ -15,7 +15,17 @@
  *   branch live, file entitlements.json
  *   expected pubkey J3Ulxeu/JPzIlGypJ28+h45rlw3aW6bJFfDu3luRGOE=
  * You must still set 4 secrets in the dashboard (see docs/WORKER-SETUP.md).
- * ===================================================================== */
+ *
+ * You must ALSO add the cron trigger (Settings -> Triggers -> Cron,
+ * "0 * * * *"). scheduled() is the only thing that republishes when nobody
+ * buys anything, and online.py fails closed on a document older than 6 h:
+ * no cron means every client locks out six hours after the last webhook.
+ *
+ * Optional vars: ROW_PEPPER (must equal the client's
+ * build_secrets.row_pepper(), or nobody's row hash matches) and
+ * ROW_PEPPER_PREVIOUS, which lets a pepper rotation migrate existing rows
+ * instead of orphaning them.
+ *===================================================================== */
 
 // src/entitlements.js
 var DAY = 86400;
@@ -75,10 +85,11 @@ function bindSubscription(ent, now, periodEnd, subStatus, subId) {
     now
   );
 }
+var STILL_ENTITLED = ["active", "canceling", "grant", "trial"];
 function extendPeriod(ent, now, periodEnd) {
   if (!periodEnd) return ent;
   if (ent.status === "refunded") return ent;
-  const status = ent.status === "canceled" ? "active" : ent.status || "active";
+  const status = STILL_ENTITLED.includes(ent.status) ? ent.status : "active";
   return recompute(
     {
       ...ent,
@@ -199,28 +210,26 @@ function extractEmail(event) {
   }
   return null;
 }
-async function rowKey(email, subtle = crypto.subtle) {
-  const normalised = "email:" + String(email).trim().toLowerCase();
+async function rowKey(email, pepper, subtle = crypto.subtle) {
+  const normalised = (pepper || "") + "email:" + String(email).trim().toLowerCase();
   const digest = await subtle.digest("SHA-256", new TextEncoder().encode(normalised));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function applyEventToRow(row, event, now, created) {
+function applyEventToRow(row, event, created) {
+  const obj = event && event.data && event.data.object || {};
   const sub = extractSubscription(event);
   const periodEnd = extractPeriodEnd(event, sub);
   const subStatus = String(sub.status || "");
   const cancelAtPeriodEnd = Boolean(sub.cancel_at_period_end);
   switch (event.type) {
     case "checkout.session.completed":
-      return sub.id ? bindSubscription(row, created, periodEnd, subStatus || "active", sub.id) : grantTrial(row, created);
-    case "invoice.paid": {
-      let next = periodEnd ? extendPeriod(row, created, periodEnd) : grantTrial(row, created);
-      if (next.status === "past_due") {
-        next = recompute({ ...next, status: "active" }, created);
-      }
-      return next;
-    }
+      if (obj.subscription) return row;
+      return grantTrial(row, created);
+    case "invoice.paid":
+      return periodEnd ? extendPeriod(row, created, periodEnd) : grantTrial(row, created);
     case "invoice.payment_failed":
       return pastDue(row, created);
+    case "customer.subscription.created":
     case "customer.subscription.updated":
       return syncSubscription(row, created, periodEnd, subStatus, cancelAtPeriodEnd);
     case "customer.subscription.deleted":
@@ -236,6 +245,7 @@ var HANDLED_EVENT_TYPES = /* @__PURE__ */ new Set([
   "checkout.session.completed",
   "invoice.paid",
   "invoice.payment_failed",
+  "customer.subscription.created",
   "customer.subscription.updated",
   "customer.subscription.deleted",
   "charge.refunded",
@@ -2466,15 +2476,45 @@ function canonicalBytes(doc) {
   }
   return new TextEncoder().encode(stableStringify(payload));
 }
+function pyString(text) {
+  let out = '"';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 34) out += '\\"';
+    else if (code === 92) out += "\\\\";
+    else if (code === 8) out += "\\b";
+    else if (code === 9) out += "\\t";
+    else if (code === 10) out += "\\n";
+    else if (code === 12) out += "\\f";
+    else if (code === 13) out += "\\r";
+    else if (code < 32 || code > 126) out += "\\u" + code.toString(16).padStart(4, "0");
+    else out += text[i];
+  }
+  return out + '"';
+}
+function pyScalar(value) {
+  if (typeof value === "string") return pyString(value);
+  if (typeof value === "number") {
+    if (!Number.isInteger(value)) {
+      throw new Error(
+        `refusing to sign the non-integer ${value}: Python's json.dumps and JSON.stringify format floats differently, so a float inside the signed payload would make every shipped client reject the document`
+      );
+    }
+    return String(value);
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (value === null || value === void 0) return "null";
+  throw new Error(`cannot sign a value of type ${typeof value}`);
+}
 function stableStringify(value) {
   if (Array.isArray(value)) {
     return "[" + value.map(stableStringify).join(",") + "]";
   }
   if (value && typeof value === "object") {
     const keys = Object.keys(value).sort();
-    return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(value[k])).join(",") + "}";
+    return "{" + keys.map((k) => pyString(k) + ":" + stableStringify(value[k])).join(",") + "}";
   }
-  return JSON.stringify(value);
+  return pyScalar(value);
 }
 function parseSeed(secret) {
   const raw = String(secret || "").trim();
@@ -2614,6 +2654,7 @@ function fixedTimeEqual(a, b) {
 
 // src/state-file.js
 var SEEN_LIMIT = 500;
+var ALIAS_LIMIT = 4000;
 var API = "https://api.github.com";
 var StateError = class extends Error {
   constructor(message, status = 502) {
@@ -2630,7 +2671,8 @@ function emptyState(now = 0) {
     rows: {},
     seen: [],
     subs: {},
-    pis: {}
+    pis: {},
+    previous_row_count: 0
   };
 }
 function isPlaceholder(doc) {
@@ -2658,7 +2700,7 @@ function contentPath(cfg) {
 async function readState(cfg) {
   const resp = await gh(contentPath(cfg), cfg);
   if (resp.status === 404) {
-    return { doc: emptyState(Date.now() / 1e3), sha: null, missing: true };
+    return { doc: emptyState(Date.now() / 1e3), sha: null, missing: true, text: null };
   }
   if (!resp.ok) {
     const text = (await resp.text()).slice(0, 300);
@@ -2680,7 +2722,7 @@ async function readState(cfg) {
   if (isPlaceholder(doc)) {
     doc = { ...emptyState(Date.now() / 1e3), ...{ rows: {} } };
   }
-  return { doc, sha: body.sha || null, missing: false };
+  return { doc, sha: body.sha || null, missing: false, text: raw };
 }
 async function writeState(cfg, contentText, expectedSha, message) {
   const payload = {
@@ -2727,23 +2769,39 @@ function markSeen(state, eventId) {
   if (!state.seen.includes(eventId)) state.seen.push(eventId);
   return trimSeen(state);
 }
+function trimAliases(map, limit = ALIAS_LIMIT) {
+  const keys = Object.keys(map);
+  for (const key of keys.slice(0, Math.max(0, keys.length - limit))) {
+    delete map[key];
+  }
+  return map;
+}
 function prune(state, now, pruneAfter) {
   const rows = state.rows || {};
+  let removed = 0;
+  const expired = /* @__PURE__ */ new Set();
   for (const key of Object.keys(rows)) {
     const ent = rows[key];
     const until = Number(ent && ent.until || 0);
-    if (!ent || typeof ent !== "object" || until && until < now - pruneAfter) {
+    if (!ent || typeof ent !== "object") {
       delete rows[key];
+      expired.add(key);
+      removed++;
+    } else if (until > 0 && until < now - pruneAfter) {
+      delete rows[key];
+      expired.add(key);
+      removed++;
     }
   }
-  const live = new Set(Object.keys(rows));
   for (const map of [state.subs, state.pis]) {
     if (!map || typeof map !== "object") continue;
     for (const key of Object.keys(map)) {
-      if (!live.has(map[key])) delete map[key];
+      if (expired.has(map[key])) delete map[key];
     }
+    trimAliases(map);
   }
-  return trimSeen(state);
+  trimSeen(state);
+  return removed;
 }
 function toPublicRows(state) {
   const out = {};
@@ -2777,6 +2835,20 @@ function resolveHash(state, event, emailHash) {
     return state.pis[obj.payment_intent];
   }
   return emailHash || null;
+}
+function rekeyRow(state, from, to) {
+  if (!from || !to || from === to) return false;
+  const rows = state.rows || {};
+  if (!rows[from] || rows[to]) return false;
+  rows[to] = rows[from];
+  delete rows[from];
+  for (const map of [state.subs, state.pis]) {
+    if (!map || typeof map !== "object") continue;
+    for (const key of Object.keys(map)) {
+      if (map[key] === from) map[key] = to;
+    }
+  }
+  return true;
 }
 function rememberIds(state, event, hash) {
   const obj = event && event.data && event.data.object || {};
@@ -2928,26 +3000,44 @@ async function handleStripe(request, env, cfg) {
     const now = Date.now() / 1e3;
     const created = Number(event.created || now);
     const email = extractEmail(event);
-    const emailHash = email ? await rowKey(email) : null;
-    const hash = resolveHash(doc, event, emailHash);
+    const emailHash = email ? await rowKey(email, env.ROW_PEPPER) : null;
+    let hash = resolveHash(doc, event, emailHash);
+    const legacyHash = email && env.ROW_PEPPER_PREVIOUS != null
+      ? await rowKey(email, env.ROW_PEPPER_PREVIOUS)
+      : null;
+    if (legacyHash && legacyHash !== emailHash &&
+        (doc.rows || {})[legacyHash] && !(doc.rows || {})[emailHash]) {
+      rekeyRow(doc, legacyHash, emailHash);
+      hash = emailHash;
+      console.log(`row ${legacyHash.slice(0, 8)} migrated to the current pepper`);
+    }
     if (!hash) {
       console.error(
-        `event ${eventId} (${eventType}) carried no email and matched no known subscription id; recorded as unapplied. Check the Stripe payload.`
+        `event ${eventId} (${eventType}) carried no email and matched no known subscription id; answering 500 so Stripe retries until the event that names this customer lands.`
       );
-      markSeen(doc, eventId);
-      doc.unkeyed = (doc.unkeyed || []).concat([`${eventId}:${eventType}`]).slice(-200);
-      await commit(env, cfg, doc, sha, `unkeyed event ${eventType}`);
-      return json({ received: true, applied: false, reason: "no customer email" });
+      return json({
+        error: "cannot resolve the customer for this event yet",
+        event_id: eventId,
+        event_type: eventType
+      }, 500);
     }
-    const existing = doc.rows?.[hash] || { status: "unsubscribed", plan: null, until: 0, refunded_at: 0 };
-    const updated = applyEventToRow(existing, event, now, created);
-    if (existing.shared) updated.shared = true;
-    doc.rows = { ...doc.rows || {}, [hash]: updated };
+    const existing = doc.rows && doc.rows[hash];
+    const updated = applyEventToRow(
+      existing || { status: "unsubscribed", plan: null, until: 0, refunded_at: 0 },
+      event,
+      created
+    );
+    const grantsSomething = Number(updated.until || 0) > 0 ||
+      ACTIVE_STATUSES.includes(updated.status);
+    if (existing || grantsSomething) {
+      if (existing && existing.shared) updated.shared = true;
+      doc.rows = { ...doc.rows || {}, [hash]: updated };
+    }
     rememberIds(doc, event, hash);
     markSeen(doc, eventId);
     doc.cursor = Math.max(Number(doc.cursor || 0), created);
-    prune(doc, now, PRUNE_AFTER);
-    const result = await commit(env, cfg, doc, sha, `live entitlements (${eventType})`);
+    const pruned = prune(doc, now, PRUNE_AFTER);
+    const result = await commit(env, cfg, doc, sha, `live entitlements (${eventType})`, pruned);
     if (result.conflict) {
       console.warn(`concurrent publish, retrying (attempt ${attempt}/${CAS_RETRIES})`);
       continue;
@@ -2965,19 +3055,22 @@ async function handleStripe(request, env, cfg) {
   }
   return json({ error: "publish kept conflicting; Stripe should retry" }, 500);
 }
-async function commit(env, cfg, doc, sha, message) {
+async function commit(env, cfg, doc, sha, message, allowedLoss = 0) {
   const now = Date.now() / 1e3;
   const previousCount = Number(doc.previous_row_count || 0);
   const nextRows = toPublicRows(doc);
-  const floor = checkRowFloor(previousCount, Object.keys(nextRows).length);
+  const nextCount = Object.keys(nextRows).length;
+  const floor = checkRowFloor(
+    previousCount,
+    nextCount + Math.max(0, Number(allowedLoss) || 0)
+  );
   if (floor) {
     console.error(floor);
     throw new StateError(floor, 500);
   }
   doc.generated_at = Math.trunc(now);
   doc.cursor = Math.max(Number(doc.cursor || 0), Math.trunc(now));
-  doc.rows_out = void 0;
-  delete doc.rows_out;
+  doc.previous_row_count = nextCount;
   const signed = signDocument(
     {
       v: 1,
@@ -2987,7 +3080,8 @@ async function commit(env, cfg, doc, sha, message) {
       seen: doc.seen || [],
       subs: doc.subs || {},
       pis: doc.pis || {},
-      ...doc.unkeyed ? { unkeyed: doc.unkeyed } : {}
+      previous_row_count: nextCount,
+      ...doc.grants ? { grants: doc.grants } : {}
     },
     env.ED25519_SECRET,
     expectedPubkey(env)
@@ -2999,7 +3093,6 @@ async function commit(env, cfg, doc, sha, message) {
   if (signed.rows && Object.keys(signed.rows).length !== Object.keys(nextRows).length) {
     throw new StateError("row count changed during signing; refusing to publish", 500);
   }
-  doc.previous_row_count = Object.keys(nextRows).length;
   return writeState(cfg, canonicalJson(signed), sha, message);
 }
 async function republish(env, cfg, message) {
@@ -3013,7 +3106,7 @@ async function republish(env, cfg, message) {
   throw new StateError(`republish kept conflicting after ${CAS_RETRIES} attempts`);
 }
 function canonicalJson(doc) {
-  return JSON.stringify(sortDeep(doc));
+  return stableStringify(sortDeep(doc));
 }
 function sortDeep(value) {
   if (Array.isArray(value)) return value.map(sortDeep);
@@ -3025,19 +3118,14 @@ function sortDeep(value) {
   return value;
 }
 async function serveDocument(env, cfg) {
-  const { doc } = await readState(cfg);
-  const now = Date.now() / 1e3;
-  const signed = signDocument(
-    {
-      v: 1,
-      generated_at: Math.trunc(now),
-      cursor: Number(doc.cursor || 0),
-      rows: toPublicRows(doc)
-    },
-    env.ED25519_SECRET,
-    expectedPubkey(env)
-  );
-  return new Response(canonicalJson(signed), {
+  const { doc, text } = await readState(cfg);
+  if (!text || !verifyDocument(doc, expectedPubkey(env))) {
+    throw new StateError(
+      "the stored document is missing or does not verify under the expected key; refusing to serve an entitlement file nobody could trust",
+      503
+    );
+  }
+  return new Response(text, {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "public, max-age=30",
@@ -3054,7 +3142,7 @@ async function handleAdmin(request, env, cfg, url) {
   const now = Date.now() / 1e3;
   if (request.method === "GET" && path === "/admin/lookup") {
     const email = url.searchParams.get("email");
-    const hash = url.searchParams.get("hash") || (email ? await rowKey(email) : null);
+    const hash = url.searchParams.get("hash") || (email ? await rowKey(email, env.ROW_PEPPER) : null);
     if (!hash) return json({ error: "provide ?email= or ?hash=" }, 400);
     const { doc } = await readState(cfg);
     const row = (doc.rows || {})[hash] || null;
@@ -3080,7 +3168,7 @@ async function handleAdmin(request, env, cfg, url) {
     }
     for (let attempt = 1; attempt <= CAS_RETRIES; attempt++) {
       const { doc, sha } = await readState(cfg);
-      const hash = await rowKey(email);
+      const hash = await rowKey(email, env.ROW_PEPPER);
       const existing = (doc.rows || {})[hash] || { status: "unsubscribed", plan: null, until: 0, refunded_at: 0 };
       const updated = supportGrant(existing, now, days, reason);
       doc.rows = { ...doc.rows || {}, [hash]: updated };

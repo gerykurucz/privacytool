@@ -25,24 +25,34 @@ INTEGRATION
 Two hooks are injectable so this module never has to know about your browser
 plumbing:
 
-    license_client.OPEN_URL = online._open_url          # your existing launcher
-    license_client.PROTECT   = online._dpapi_protect    # optional at-rest encryption
+    license_client.OPEN_URL = online._open_url
+    license_client.PROTECT   = online._dpapi_protect
     license_client.UNPROTECT = online._dpapi_unprotect
 
 Typical use from gui.py:
 
     import license_client as lc
 
-    lc.configure(base_url=build_secrets.license_base_url(),
+    lc.configure(base_url="https://api.example.com",
                  pubkey=build_secrets.entitlement_pubkey(),
                  secure_dir=online.secure_dir())
 
-    session = lc.sign_in()                 # blocks until the browser round trip ends
-    ok, why = lc.gate(session)             # (True, "live") / (False, "seat_taken")
-    lc.start_heartbeat(session)            # background thread, renews the lease
+    session = lc.sign_in()
+    ok, why = lc.gate(session)
+    lc.start_heartbeat(session)
     ...
-    lc.stop_heartbeat()                    # on window close
-    lc.release(session)                    # on exit: frees the seat immediately
+    lc.stop_heartbeat()
+    lc.release(session)
+
+SERVER REQUIREMENT
+------------------
+This module speaks the v1 HTTP API and nothing else. The single-file
+entitlement publisher (`worker.js`, the Stripe-webhook-to-public-repo build)
+does NOT implement it: it serves /healthz, /webhooks/stripe,
+/entitlements.json and /admin/* only, so pointing this client at that worker
+404s on every call and the gate refuses everyone. `required_routes()` is the
+contract a license server has to answer. Until one exists the app ships the
+GitHub-fetching path in `online.py`, and this module stays out of the freeze.
 """
 
 from __future__ import annotations
@@ -64,20 +74,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     import edsig
-except ImportError:  # pragma: no cover - edsig.py sits beside this file
+except ImportError:
     edsig = None
 
 try:
     import i18n
-except ImportError:  # pragma: no cover - i18n is optional
+except ImportError:
     i18n = None
 
+if i18n is not None:
+    i18n.publish("en", {
+        "gate.msg.no_subscription": "No subscription found for this "
+                                    "Discord account.",
+        "seat.expired": "Connection was lost and the session lapsed. "
+                        "Signing in again will reclaim it.",
+        "seat.preempted": "Another computer took over this session.",
+        "seat.takeover_cooldown": "You switched computers too recently. "
+                                  "Please wait a couple of minutes.",
+    })
 
-# ---------------------------------------------------------------------------
-# module state (configure() sets these; nothing is read from config.json)
-# ---------------------------------------------------------------------------
+
+
+
+
 BASE_URL = ""
-ENTITLEMENT_PUBKEY = ""      # base64 Ed25519 public key, same one as before
+ENTITLEMENT_PUBKEY = ""
 SECURE_DIR = ""
 
 LOOPBACK_HOST = "127.0.0.1"
@@ -88,22 +109,22 @@ HTTP_TIMEOUT = 15.0
 LOGIN_TIMEOUT = 300.0
 BEAT_JITTER_SECONDS = 3
 
-# Local ceiling on offline grace. The server stamps `not_after` into every
-# grant; the SMALLER of the two wins, so shortening grace server-side takes
-# effect without shipping a new exe.
+
+
+
 LOCAL_GRACE_CEILING_SECONDS = 6 * 3600
 
-# Injectables -- see the module docstring.
+
 OPEN_URL = webbrowser.open
 PROTECT = None
 UNPROTECT = None
 
-# DEV ONLY. When set, start_sign_in() returns this URL instead of the provider's
-# authorize URL, so an automated test can drive the loopback hand-back without
-# a real Discord round trip. It must be the license server's own callback with
-# ?code=&state= filled in. A frozen build ignores it, for the same reason
-# build_secrets gates its environment overrides on `sys.frozen`: a shipped exe
-# must not be steerable by an environment variable.
+
+
+
+
+
+
 DEV_AUTHORIZE_URL = ""
 
 _log = []
@@ -144,11 +165,11 @@ def configure(base_url=None, pubkey=None, secure_dir=None):
         raise LicenseError("no Ed25519 public key - a subscription can never "
                            "be verified, so nobody could get past the gate")
     if edsig is None:
-        # The import is wrapped in try/except so this module can be imported
-        # standalone -- but a build that ships without edsig.py would then fail
-        # EVERY verify_grant() and refuse EVERY customer, with the only evidence
-        # being a line in a log file. Refuse to configure instead, so the
-        # packaging mistake surfaces at startup with a readable reason.
+
+
+
+
+
         raise LicenseError("edsig module is missing from this build - grants "
                            "cannot be verified, so no subscription could ever "
                            "be confirmed. Check the PyInstaller spec includes "
@@ -156,6 +177,43 @@ def configure(base_url=None, pubkey=None, secure_dir=None):
     if not SECURE_DIR:
         SECURE_DIR = _default_secure_dir()
     return BASE_URL
+
+
+API_PREFIX = "/api/v1"
+
+REQUIRED_ROUTES = (
+    ("GET", API_PREFIX + "/auth/discord/start"),
+    ("POST", API_PREFIX + "/auth/session"),
+    ("POST", API_PREFIX + "/access/beat"),
+    ("POST", API_PREFIX + "/access/takeover"),
+    ("POST", API_PREFIX + "/access/release"),
+    ("GET", API_PREFIX + "/access/status"),
+)
+
+
+def required_routes():
+    """(method, path) pairs a license server must implement."""
+    return REQUIRED_ROUTES
+
+
+def probe_server(timeout=10.0):
+    """(ok, detail) - does BASE_URL actually answer this client's API?
+
+    Run it once at deployment time, not per start-up: it exists so wiring
+    this module to the publisher worker fails here with a readable verdict
+    instead of as a cascade of 404s inside the gate.
+    """
+    missing = []
+    for method, path in REQUIRED_ROUTES:
+        try:
+            status, _body = _request(path, method=method, timeout=timeout)
+        except LicenseError as exc:
+            return False, "server unreachable: %s" % exc
+        if status == 404 or status == 405:
+            missing.append("%s %s" % (method, path))
+    if missing:
+        return False, "server does not implement: %s" % ", ".join(missing)
+    return True, "all %d routes answered" % len(REQUIRED_ROUTES)
 
 
 def configured():
@@ -185,9 +243,9 @@ def _T(key, fallback):
     return fallback
 
 
-# ---------------------------------------------------------------------------
-# install identity
-# ---------------------------------------------------------------------------
+
+
+
 def device_id():
     """A stable per-install identifier.
 
@@ -205,6 +263,10 @@ def device_id():
         pass
     value = secrets.token_hex(16)
     try:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        except Exception:
+            pass
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(value)
     except OSError as exc:
@@ -214,21 +276,23 @@ def device_id():
 
 def device_label():
     """A short label the account owner will recognise in the 'in use elsewhere'
-    dialog. Never send a hostname hash, a MAC or an IP: the person reading that
-    dialog may be a sibling, and they only need enough to identify a machine."""
+    dialog. Never send a hostname, a MAC or an IP: the person reading that
+    dialog may be a sibling, and they only need enough to tell two of their own
+    machines apart - so this is the OS plus the first six characters of the
+    random per-install id."""
     try:
         system = platform.system() or "PC"
         release = platform.release() or ""
-        node = (platform.node() or "").split(".")[0][:20]
-        label = " ".join(x for x in (node, system, release) if x).strip()
-        return (label or "This computer")[:64]
+        label = " ".join(x for x in (system, release) if x).strip()
+        return ("%s (%s)" % (label or "This computer",
+                             device_id()[:6]))[:64]
     except Exception:
         return "This computer"
 
 
-# ---------------------------------------------------------------------------
-# HTTP
-# ---------------------------------------------------------------------------
+
+
+
 def _request(path, data=None, token=None, timeout=None, method=None):
     """(status, parsed_body). Raises LicenseError only when the server could
     not be reached at all -- an HTTP error status is a normal answer here."""
@@ -248,27 +312,29 @@ def _request(path, data=None, token=None, timeout=None, method=None):
     try:
         with urllib.request.urlopen(request, timeout=timeout or HTTP_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8", "replace")
-            return resp.status, (json.loads(raw) if raw.strip() else {})
-    except urllib.error.HTTPError as exc:
+            try:
+                data = json.loads(raw) if raw.strip() else {}
+            except ValueError:
+                raise LicenseError("invalid JSON from server")
+            return resp.status, data
         raw = exc.read().decode("utf-8", "replace")
         try:
             return exc.code, json.loads(raw)
         except ValueError:
-            # Truncate: an HTML error page from a proxy is not useful and would
-            # otherwise end up in a log the customer is asked to send.
+
+
             return exc.code, {"detail": raw[:200]}
-    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
+    except Exception as exc:
         raise LicenseError("license server unreachable: %s" % exc)
 
 
-# ---------------------------------------------------------------------------
-# loopback listener for the OAuth hand-back
-# ---------------------------------------------------------------------------
+
+
+
 class _CallbackHandler(BaseHTTPRequestHandler):
     server_version = "SnappyAI/9.0"
-    received = None
 
-    def do_GET(self):  # noqa: N802 - http.server API
+    def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path != LOOPBACK_PATH:
             self.send_error(404)
@@ -276,7 +342,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         code = (query.get("session_code") or [""])[0]
         error = (query.get("error") or [""])[0]
-        _CallbackHandler.received = {"session_code": code, "error": error}
+        type(self).received = {"session_code": code, "error": error}
 
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -289,7 +355,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
              "<h2>%s</h2></body>" % message).encode("utf-8")
         )
 
-    def log_message(self, *args):  # silence stderr spam
+    def log_message(self, *args):
         pass
 
 
@@ -323,7 +389,7 @@ def _listen_for_session_code(port, timeout):
     """
     _CallbackHandler.received = None
     httpd = ThreadingHTTPServer((LOOPBACK_HOST, port), _CallbackHandler)
-    # Short accept timeout: this is how quickly we notice the hand-back.
+
     httpd.timeout = 0.2
     deadline = time.time() + timeout
     server_thread = threading.Thread(target=_serve_until, args=(httpd, deadline),
@@ -335,9 +401,9 @@ def _listen_for_session_code(port, timeout):
                 break
             time.sleep(0.05)
     finally:
-        # Never call httpd.shutdown() from inside a handler: it joins the serve
-        # loop, which is waiting on the handler, and deadlocks. Stopping the
-        # loop via its deadline and closing the socket is safe from here.
+
+
+
         httpd.timeout = 0.0
         try:
             httpd.server_close()
@@ -368,9 +434,9 @@ def _serve_until(httpd, deadline):
             return
 
 
-# ---------------------------------------------------------------------------
-# STAGE 1 - sign in with Discord (server-mediated)
-# ---------------------------------------------------------------------------
+
+
+
 def start_sign_in():
     """Begin a Discord sign-in. Returns (authorize_url, loopback_port).
 
@@ -393,14 +459,14 @@ def start_sign_in():
         raise LicenseError("server returned no authorize_url")
 
     if DEV_AUTHORIZE_URL and not getattr(sys, "frozen", False):
-        # Test hook: skip the provider and go straight to our server's callback.
+
         state = urllib.parse.parse_qs(
             urllib.parse.urlparse(authorize_url).query).get("state", [""])[0]
         authorize_url = "%s%scode=dev-code&state=%s" % (
             DEV_AUTHORIZE_URL, "&" if "?" in DEV_AUTHORIZE_URL else "?", state)
         log("DEV_AUTHORIZE_URL is set - skipping the provider hop")
 
-    # Ask the server to hand the session_code back to our loopback listener.
+
     loopback = "http://%s:%d%s" % (LOOPBACK_HOST, port, LOOPBACK_PATH)
     separator = "&" if "?" in authorize_url else "?"
     authorize_url = authorize_url + separator + "redirect=" + urllib.parse.quote(loopback, safe="")
@@ -425,18 +491,21 @@ def sign_in(timeout=None, opener=None):
         try:
             listener_error["code"] = _listen_for_session_code(
                 port, timeout or LOGIN_TIMEOUT)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             listener_error["exc"] = exc
 
     waiter = threading.Thread(target=_wait, daemon=True, name="license-wait")
     waiter.start()
 
-    # Open the browser AFTER the listener is bound, so a fast hand-back cannot
-    # be missed. Your existing launcher knows about dedicated profiles and the
-    # hidden-spawn flags on Windows; webbrowser.open is only the fallback.
+
+
+
     try:
-        (opener or OPEN_URL)(authorize_url)
-    except Exception as exc:  # noqa: BLE001
+        opened = (opener or OPEN_URL)(authorize_url)
+        if not opened:
+            log("browser opener returned False")
+            raise LicenseError("could not open browser")
+    except Exception as exc:
         log("could not open the browser: %s" % exc)
         raise LicenseError(_T("online.cancelled",
                               "Discord authentication could not start. "
@@ -472,11 +541,11 @@ def exchange_session(session_code):
     return body
 
 
-# ---------------------------------------------------------------------------
-# STAGE 3 - seat lease
-# ---------------------------------------------------------------------------
-#: A lapsed lease is retried this many times before we believe it. Retrying is
-#: what stops one dropped packet from looking like account sharing.
+
+
+
+
+
 BEAT_RECLAIM_ATTEMPTS = 3
 BEAT_RECLAIM_BACKOFF_SECONDS = (1.0, 3.0, 6.0)
 
@@ -530,6 +599,28 @@ def beat(session, reclaim=True):
     return body
 
 
+_SESSION_FIELDS = ("access_token", "token_scope", "expires_in",
+                   "heartbeat_in", "seat_nonce", "device_id", "email_hash",
+                   "grant")
+
+
+def _absorb(session, body):
+    """Fold a SessionResponse into the live session, then persist the merge.
+
+    Saving the response wholesale used to replace the session file, so every
+    field the server left out (identity hash, lease timing) disappeared from
+    disk and the next start-up had to sign in again.
+    """
+    if not isinstance(session, dict) or not isinstance(body, dict):
+        return session
+    for key in _SESSION_FIELDS:
+        if body.get(key) is not None:
+            session[key] = body[key]
+    if body.get("access_token"):
+        save_session(session)
+    return session
+
+
 def _beat_once(session, token):
     status, body = _request("/api/v1/access/beat", data={
         "device_id": device_id(),
@@ -539,11 +630,9 @@ def _beat_once(session, token):
         raise LicenseError("session expired - sign in again")
     if status not in (200, 409):
         raise LicenseError("heartbeat failed: %s" % body.get("detail"))
-    if body.get("access_token"):
-        session["access_token"] = body["access_token"]
-        save_session(body)
     if body.get("grant"):
         cache_grant(body["grant"])
+    _absorb(session, body)
     return body
 
 
@@ -567,11 +656,9 @@ def take_over(session):
         raise LicenseError("session expired - sign in again")
     if status not in (200, 409):
         raise LicenseError("takeover failed: %s" % body.get("detail"))
-    if body.get("access_token"):
-        session["access_token"] = body["access_token"]
-        save_session(body)
     if body.get("grant"):
         cache_grant(body["grant"])
+    _absorb(session, body)
     log("takeover: allowed=%s message=%s" % (body.get("allowed"), body.get("message")))
     return body
 
@@ -583,10 +670,12 @@ def release(session):
     if not token:
         return False
     try:
-        _request("/api/v1/access/release",
-                 data={"device_id": device_id()}, token=token, timeout=5)
-        log("seat released")
-        return True
+        status, body = _request("/api/v1/access/release",
+                          data={"device_id": device_id()}, token=token, timeout=5)
+        if 200 <= status < 300:
+            log("seat released")
+            return True
+        return False
     except LicenseError as exc:
         log("release failed (the lease will lapse on its own): %s" % exc)
         return False
@@ -607,9 +696,9 @@ def _token_for(session):
     return token
 
 
-# ---------------------------------------------------------------------------
-# STAGE 4 - grant verification (offline capable)
-# ---------------------------------------------------------------------------
+
+
+
 def canonical_bytes(doc):
     """Identical to online._canonical_bytes / builder.sign_document:
     sorted keys, compact separators, `sig` excluded."""
@@ -645,25 +734,34 @@ def grant_row(grant, identity_hash):
     return row if isinstance(row, dict) else None
 
 
-def grant_within_grace(grant):
-    """Trust the SMALLER of the server's not_after and the local ceiling."""
-    try:
-        not_after = int((grant or {}).get("not_after", 0))
-    except (TypeError, ValueError):
-        return False
-    if not_after <= 0:
-        return False
-    ceiling = int(time.time()) + LOCAL_GRACE_CEILING_SECONDS
-    return min(not_after, ceiling) > time.time()
+def _grace_deadline(grant, cached_at):
+    """min(server not_after, when THIS COPY was cached + the local ceiling).
 
-
-def grant_remaining_seconds(grant):
+    Both ends matter: `not_after` alone would let a grant cached a month ago
+    keep the engine running offline for as long as the subscription lasts, and
+    the ceiling alone would ignore a subscription that ends tomorrow. An
+    unknown cache time answers 0, which fails closed.
+    """
     try:
         not_after = int((grant or {}).get("not_after", 0))
     except (TypeError, ValueError):
         return 0
-    ceiling = int(time.time()) + LOCAL_GRACE_CEILING_SECONDS
-    return max(0, min(not_after, ceiling) - int(time.time()))
+    try:
+        cached_at = int(cached_at or 0)
+    except (TypeError, ValueError):
+        return 0
+    if not_after <= 0 or cached_at <= 0:
+        return 0
+    return min(not_after, cached_at + LOCAL_GRACE_CEILING_SECONDS)
+
+
+def grant_within_grace(grant, cached_at=0):
+    """Trust the SMALLER of the server's not_after and the local ceiling."""
+    return _grace_deadline(grant, cached_at) > int(time.time())
+
+
+def grant_remaining_seconds(grant, cached_at=0):
+    return max(0, _grace_deadline(grant, cached_at) - int(time.time()))
 
 
 def grant_device_matches(grant):
@@ -688,9 +786,9 @@ def row_is_active(row, now=None):
         return False
 
 
-# ---------------------------------------------------------------------------
-# THE GATE
-# ---------------------------------------------------------------------------
+
+
+
 def gate(session, identity_hash=None):
     """(allowed, reason, detail). The single decision point gui.py calls.
 
@@ -703,7 +801,7 @@ def gate(session, identity_hash=None):
     detail = {}
     identity_hash = identity_hash or (session or {}).get("email_hash") or ""
 
-    # --- 1. ask the server -------------------------------------------------
+
     if (session or {}).get("access_token"):
         try:
             body = beat(session)
@@ -718,7 +816,7 @@ def gate(session, identity_hash=None):
                 log("gate: refused by the server (%s)" % reason)
                 return False, reason, body
 
-            # The server said yes, but never trust an unsigned assertion.
+
             if grant is not None and not verify_grant(grant):
                 log("gate: server said allowed but the grant signature is "
                     "INVALID - refusing")
@@ -726,17 +824,21 @@ def gate(session, identity_hash=None):
 
             row = grant_row(grant, identity_hash)
             if row is None:
-                # No row for this identity: fall back to the embedded entitlement.
+
                 ent = body.get("entitlement") or {}
-                if ent.get("active") and float(ent.get("until") or 0) > time.time():
+                try:
+                    until = float(ent.get("until") or 0)
+                except Exception:
+                    until = 0.0
+                if ent.get("active") and until > time.time():
                     return True, "live", body
                 return False, "no_entitlement", body
             if not row_is_active(row):
                 return False, str(row.get("status") or "no_entitlement"), body
             return True, "live", body
 
-    # --- 2. server unreachable: cached signed grant ------------------------
-    cached = load_cached_grant()
+
+    cached, cached_at = load_cached_grant()
     if cached is not None:
         if not verify_grant(cached):
             log("gate: cached grant failed verification - refusing")
@@ -744,26 +846,28 @@ def gate(session, identity_hash=None):
         if not grant_device_matches(cached):
             log("gate: cached grant belongs to another install - refusing")
             return False, "wrong_device", detail
-        if not grant_within_grace(cached):
-            log("gate: cached grant is outside the offline grace window - refusing")
+        if not grant_within_grace(cached, cached_at):
+            log("gate: cached grant is outside the offline grace window "
+                "(cached %ds ago) - refusing"
+                % (int(time.time()) - cached_at,))
             return False, "unreachable", detail
         row = grant_row(cached, identity_hash)
         if row_is_active(row):
-            remaining = grant_remaining_seconds(cached)
+            remaining = grant_remaining_seconds(cached, cached_at)
             log("gate: offline, running on the cached grant (%ds of grace left)"
                 % remaining)
             detail = {"offline": True, "grace_remaining": remaining, "grant": cached}
             return True, "offline-grace", detail
         return False, str((row or {}).get("status") or "no_entitlement"), detail
 
-    # --- 3. nothing verified ----------------------------------------------
+
     log("gate: server unreachable and no usable cached grant - refusing")
     return False, "unreachable", detail
 
 
-# ---------------------------------------------------------------------------
-# heartbeat thread
-# ---------------------------------------------------------------------------
+
+
+
 _heartbeat = {"thread": None, "stop": None, "last": None, "verdict": None}
 
 
@@ -791,7 +895,7 @@ def start_heartbeat(session, on_verdict=None):
         while not stop.is_set():
             try:
                 allowed, reason, detail = gate(session)
-            except Exception as exc:  # noqa: BLE001 - never kill the thread
+            except Exception as exc:
                 log("heartbeat error: %s" % exc)
                 allowed, reason, detail = False, "error", {}
             _heartbeat["last"] = time.time()
@@ -799,7 +903,7 @@ def start_heartbeat(session, on_verdict=None):
             if on_verdict is not None:
                 try:
                     on_verdict(allowed, reason, detail)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     log("on_verdict callback raised: %s" % exc)
             jitter = secrets.randbelow(BEAT_JITTER_SECONDS * 1000) / 1000.0
             if stop.wait(interval + jitter):
@@ -840,9 +944,9 @@ def heartbeat_alive(max_age=None):
     return (time.time() - last) <= (max_age or 180)
 
 
-# ---------------------------------------------------------------------------
-# session + grant at rest
-# ---------------------------------------------------------------------------
+
+
+
 def _protect(raw):
     """At-rest protection, degrading to plaintext rather than failing.
 
@@ -875,22 +979,22 @@ def _unprotect(raw):
             log("UNPROTECT hook raised: %s" % exc)
             return b""
         if out is None:
-            # Another Windows user/profile, or a truncated file.
+
             return b""
         return out
     return raw
 
 
-# ---------------------------------------------------------------------------
-# at-rest protection with a self-describing envelope
-#
-# The host app's DPAPI helpers return None off-Windows and when protection
-# fails. Writing that None (or reading it back) silently loses the cached grant
-# -- which is the customer's ONLY fallback when the server is unreachable, so
-# the failure surfaces as "offline lockout" rather than an error. The envelope
-# records which protection was actually applied, exactly like online.py's
-# save_session() does.
-# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
 def _write_protected(path, payload_bytes):
     """Write bytes under DPAPI when available, obfuscated otherwise."""
     prot = "b64"
@@ -933,10 +1037,10 @@ def _path(name):
     return os.path.join(SECURE_DIR or _default_secure_dir(), name)
 
 
-#: This module's own credential file. Deliberately NOT the same name the host
-#: application uses for its session: two writers to one path is how a session
-#: silently disappears (one overwrites the other's format). The host app owns
-#: `license_session.json`; this module owns `license_token.json`.
+
+
+
+
 TOKEN_FILE = "license_token.json"
 
 
@@ -982,13 +1086,17 @@ def clear_session():
 
 
 def cache_grant(grant):
-    """Store the signed grant for offline use. Verify BEFORE caching: writing a
-    bad document would poison the only fallback the customer has."""
+    """Store the signed grant for offline use, stamped with the time it was
+    fetched. Verify BEFORE caching: writing a bad document would poison the
+    only fallback the customer has. The stamp sits OUTSIDE the signed grant so
+    the signature still verifies byte-for-byte."""
     if not verify_grant(grant):
         log("refusing to cache a grant that does not verify")
         return False
+    envelope = {"cached_at": int(time.time()), "grant": grant}
     try:
-        _write_protected(_path("grant.json"), json.dumps(grant).encode("utf-8"))
+        _write_protected(_path("grant.json"),
+                         json.dumps(envelope).encode("utf-8"))
         return True
     except (OSError, TypeError, ValueError) as exc:
         log("could not cache the grant: %s" % exc)
@@ -996,33 +1104,54 @@ def cache_grant(grant):
 
 
 def load_cached_grant():
-    raw = _read_protected(_path("grant.json"))
+    """(grant, cached_at); (None, 0) when there is nothing usable. A bare
+    grant file written by an older build falls back to its mtime."""
+    path = _path("grant.json")
+    raw = _read_protected(path)
     if raw is None:
-        return None
+        return None, 0
     try:
-        return json.loads(raw.decode("utf-8"))
+        doc = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        return None
+        return None, 0
+    if not isinstance(doc, dict):
+        return None, 0
+    cached_at = 0
+    if isinstance(doc.get("grant"), dict):
+        grant = doc["grant"]
+        try:
+            cached_at = int(doc.get("cached_at") or 0)
+        except (TypeError, ValueError):
+            cached_at = 0
+    else:
+        grant = doc
+    if not cached_at:
+        try:
+            cached_at = int(os.path.getmtime(path))
+        except OSError:
+            cached_at = 0
+    return grant, cached_at
 
 
 def cached_grant_state():
     """For the settings dialog: how much offline grace is left."""
-    grant = load_cached_grant()
+    grant, cached_at = load_cached_grant()
     if grant is None:
         return {"present": False}
     return {
         "present": True,
         "verifies": verify_grant(grant),
         "device_matches": grant_device_matches(grant),
-        "within_grace": grant_within_grace(grant),
-        "grace_remaining_seconds": grant_remaining_seconds(grant),
+        "within_grace": grant_within_grace(grant, cached_at),
+        "grace_remaining_seconds": grant_remaining_seconds(grant, cached_at),
+        "cached_at": cached_at,
         "issued_at": grant.get("issued_at"),
     }
 
 
-# ---------------------------------------------------------------------------
-# UI helpers
-# ---------------------------------------------------------------------------
+
+
+
 def describe_seats(body):
     """Human text for the 'account in use elsewhere' dialog."""
     seats = (body or {}).get("seats") or {}
@@ -1053,8 +1182,8 @@ def describe_reason(reason, body=None):
         "bad_signature": "The licence could not be verified. Please contact support.",
         "wrong_device": "This licence belongs to a different installation.",
         "unreachable": _T("shared.unreachable", "Server unreachable - will re-check."),
-        # Two different events that used to share one string, which is why a
-        # dropped packet read as account sharing.
+
+
         "seat-preempted": _T("seat.preempted",
                              "Another computer took over this session."),
         "seat-expired": _T("seat.expired",

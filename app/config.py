@@ -1,5 +1,3 @@
-"""Settings: defaults, validation, JSON + INI storage, live reload,
-import/export. Shared by every interface (GUI, console, tests)."""
 
 import json
 import os
@@ -8,12 +6,16 @@ import threading
 from configparser import ConfigParser
 
 import build_secrets
+import gamepad
+import hotkeys
 import i18n
 from core import log
 from colorspec import parse_accents
 
-# User-facing return strings live in the catalog like everything else
-# (v8.40); log lines stay English, they are support evidence.
+
+
+MOUSE_BUTTONS = ("mouse1", "mouse2", "mouse3", "mouse4", "mouse5")
+
 i18n.publish("en", {
     "st.import_fail": "Import failed: %r",
     "st.import_notfile": "Import failed: not a settings file.",
@@ -22,68 +24,68 @@ i18n.publish("en", {
 })
 
 DEFAULT_CONFIG = {
-    # v8.27 GUI restructure - removed settings (old config.json keys
-    # are ignored on load, ini overrides for them are dropped):
-    #   assist_enabled / start_paused : assistance is ALWAYS available
-    #       and the engine ALWAYS starts paused (Launch is the gate).
-    #   feedback / announce_snaps     : the voice-feedback feature is
-    #       gone entirely - no spoken announcements, no powershell
-    #       speech child process.
-    #   entitlement_check_minutes     : the runtime subscription
-    #       re-check cadence is a built-in constant (30 min), not a
-    #       user setting.
-    #   accent_color2 / accent_boost2 : "Accent colour(s)" already
-    #       accepts an unlimited ";"-separated list - one accent field.
-    #   key_radius / key_feedback / key_reload / key_quit : those
-    #       hotkeys are gone (config reload happens on Apply; quitting
-    #       happens through the window close button).
-    #   play_mode / play_repeat       : playback style is stored PER
-    #       RECORDING ("loop" flag in macros.json), not globally.
-    #   macroN_repeat / _period_ms / _once / _block : a macro is one
-    #       blocked trigger -> exactly one combo press.
 
-    # 1 = classic: suppress mis-click, snap, auto-click.
-    # 2 = guide: never eat clicks, move cursor after release.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     "mode": 2,
 
-    # Search radius in logical pixels.
+
     "radius": 150,
 
-    # ------------------------------------------------------------------
-    # v8.49: NOTHING deployment-related lives here any more.
-    #
-    # The entitlement repo/branch, both Stripe payment links, the OAuth
-    # client credentials, the presence webhook and the row-hash pepper
-    # are BUILD CONSTANTS in build_secrets.py, not settings. They used to
-    # be keys in this dict, which meant Config.save() wrote the payment
-    # links and the repo into config.json next to the exe in clear text -
-    # readable by anyone with the folder, attached to every support
-    # request, and copied out by Export Config into a file users were
-    # told to share.
-    #
-    # They were never settings in any meaningful sense: repointing the
-    # entitlement repo gains nothing because the Ed25519 public key is a
-    # pinned build constant, and there is no scenario where a user wants
-    # a different payment link. SENSITIVE_KEYS below is enforced by
-    # save() and export_to() as a second layer, so a future key cannot
-    # reach the disk by accident either.
-    #
-    # Old config.json files carrying these keys load fine - the keys are
-    # dropped (see _load) and the build constants are used instead.
-    # ------------------------------------------------------------------
 
-    # Interface theme: "light" or "dark". Toggle on the login screen or
-    # in the app header; persisted like every other setting.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     "theme": "light",
 
-    # After a successful snap, quick repeat clicks near the same place
-    # may be treated as double-click assistance in classic mode.
+
+
     "watcher_seconds": 0.45,
 
-    # If capture/scan stalls, pause assistance briefly.
+
     "stall_pause_seconds": 0.25,
 
-    # Advanced image-analysis tuning.
+
     "contrast_threshold": 38,
     "min_contrast": 48,
     "min_area": 220,
@@ -91,303 +93,352 @@ DEFAULT_CONFIG = {
     "max_dim": 300,
     "on_target_dist": 10,
 
-    # Detection adaptivity:
-    # adaptive_threshold lets inherently dim regions (dark themes,
-    # washed-out documents) lower their own ink bar; luminance_norm
-    # scores edges relative to local brightness so dark-mode items rank
-    # like their light-mode equivalents. Both default on; mid-grey
-    # content behaves exactly as before.
+
+
+
+
+
+
     "adaptive_threshold": True,
     "luminance_norm": True,
 
-    # Screen capture backend.
-    # "auto"  = mss (GDI) first - it sees every ordinary window,
-    #           including games and hardware-accelerated apps that
-    #           Desktop Duplication cannot observe. (v8.52: auto used
-    #           to prefer dxcam; stale/black frames in live tests were
-    #           the result.)
-    # "dxcam" = force Desktop Duplication - fastest grabs, but blind to
-    #           some game/fullscreen swapchains; mss stays as fallback.
-    # "mss"   / "wgc" = force GDI / Windows.Graphics.Capture.
+
+
+
+
+
+
+
+
+
     "capture_backend": "auto",
 
-    # Click DELIVERY backend (v8.50). Opt-in secondary option:
-    # "win32" (default) injects through SendInput - no driver, works
-    # out of the box, and our own hooks recognise the events as
-    # injected so assistance never feeds itself.
-    # "interception" delivers clicks at the DRIVER level through the
-    # Interception library (github.com/oblitum/Interception) for the
-    # minority of games and Raw-Input apps that ignore synthetic
-    # events. It needs interception.dll beside the app AND the signed
-    # kernel driver installed (interception.exe install, then reboot).
-    # If either is missing the app says so once and keeps working
-    # through the standard Windows method - a half-installed setup can
-    # never eat a click. Applies on restart.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     "input_backend": "win32",
 
-    # Detected pieces whose bounding boxes are within this many pixels of
-    # each other are merged into a single item. This rescues broken
-    # outlines, icon + label pairs, and fragments that are individually
-    # smaller than min_area. 0 disables merging.
+
+
+    "server_url": "ws://127.0.0.1:19561",
+
+
+
+
+
     "merge_distance": 18,
 
-    # Accent colour priority. "off", one colour ("r,g,b" 0-255, or a
-    # preset name: red, orange, yellow, green, cyan, blue, purple, pink,
-    # grey, white, black), or several separated by ";" - for example
-    # "blue; red" or "60,120,220; 200,60,60". Items containing pixels
-    # near ANY accent get a scoring boost proportional to how much of
-    # the item matches, so "the one with more blue in it" wins ties.
-    # This never excludes other items; it only breaks ties in your
-    # favour.
+
+
+
+
+
+
+
+
     "accent_color": "off",
     "accent_tolerance": 26,
 
-    # Smart colour matching (0-100). Above 0, near-miss shades of the
-    # accent earn graded partial credit instead of scoring zero:
-    # lighter/darker, washed-out or slightly hue-shifted variants are
-    # preferred like the real colour (weaker, proportionally), and a
-    # colour with the same brightness AND vividness but a different
-    # hue still earns ~10-20% "looks related" credit. Ranking only -
-    # accent_only exclusion and follow-memory learning still require a
-    # real match. 0 = classic exact tolerance box.
+
+
+
+
+
+
+
+
     "accent_soft": 60,
 
-    # Smart matcher engine, used while accent_soft > 0 (at 0 both use
-    # the classic exact tolerance box):
-    # "oklab" = perceptual matching (recommended). Colours are compared
-    #   in OKLab, a perceptually uniform colour space: ranking follows
-    #   how different colours actually LOOK. Fixes the classic scorer's
-    #   hue false positives (a saturated green can no longer ride a
-    #   blue accent's tolerance) and rescues anti-aliased accent-
-    #   coloured glyph/icon edges on any background via a blend-line
-    #   test. Also ~1.5-2x faster per scanned item.
-    # "hsv" = the v8.13 weighted-HSV smart matcher (kept for A/B
-    #   comparison in the field).
+
+
+
+
+
+
+
+
+
+
+
     "accent_matcher": "oklab",
 
     "accent_boost": 0.9,
 
-    # Hard-excluded colours ("never clickable"). Same syntax as
-    # accent_color (preset name, "r,g,b", ";" list). Items with a REAL
-    # match (strict gate: >= 5% of pixels at similarity >= 0.55) are
-    # dropped from assistance entirely - clicks on them pass straight
-    # through to Windows, in both modes. Exclusion outranks every
-    # accent boost; soft partial credit can never keep an excluded
-    # item clickable. "off" disables.
+
+
+
+
+
+
+
     "exclude_color": "off",
 
-    # Motion lead ("smart follower"): for MOVING items (scrolling
-    # lists, video seek bars) the engine measures the chosen target's
-    # speed and direction across consecutive scans and aims ahead by
-    # this many milliseconds of that travel, so the click lands on the
-    # item instead of where it was. The offset is capped (80 px), and
-    # standing, slow or direction-changing histories get no lead at
-    # all - stationary items behave exactly as before.
+
+
+
+
+
+
+
     "motion_predict": False,
     "motion_lead_ms": 50,
 
-    # Watch the screen centre only: when true, every scan is anchored
-    # at the middle of the virtual screen instead of under the cursor -
-    # for fixed-position layouts (kiosks, TV guides, one app filling the
-    # window) where the items never move. The search radius stays as set
-    # on Advanced; a click far outside that area simply passes through
-    # unassisted, like any empty space. Off = the classic cursor-anchored
-    # behaviour, bit-for-bit.
+
+
+
+
+
+
+
     "watch_center_only": False,
 
-    # "Keep the cursor on it" (centre-watch follow). Only ever acts while
-    # watch_center_only is ON: after an item inside the watched square
-    # was picked (a click that snapped to it, or resting the cursor on
-    # it for ~0.3 s), the cursor stays parked on that item and chases it
-    # while it moves - scroll planes, animated panels, moving targets.
-    # It never fights the user: any held button or active follow-lock
-    # pauses it, and it dies ~1 s after the item stops being sighted.
-    # Combine with "Lead moving items" for smooth fast chasing.
+
+
+
+
+
+
+
+
     "center_follow": False,
 
-    # Colour-stage scan budget in milliseconds (vision.scan_region).
-    # Items whose colour could not be checked before this deadline fail
-    # closed for accent_only/exclude_color and are reported in the log.
-    # 350 ms is generous enough that a radius-400 busy screen finishes
-    # scoring; lower it (min 60) if scans ever feel late on slow machines.
+
+
+
+
+
     "scan_budget_ms": 350,
 
-    # 3D snap follower: track position AND scale with a Kalman filter
-    # instead of the legacy linear fit. Outliers are rejected per scan
-    # (one bad frame damps the step instead of blinding the track),
-    # direction changes are followed through in two or three scans,
-    # and a sudden scale jump restarts the track (different item, not
-    # growth). Same gates, same cap - only the brains change. Needs
-    # motion_predict on; off keeps the legacy engine bit-for-bit.
+
+
+
+
+
+
+
     "motion_3d": False,
 
-    # Colour-exclusive targeting ("click the blue thing" mode). When
-    # true, ONLY items containing the accent colour are eligible for
-    # assistance; clicks where nothing matches pass through untouched
-    # (mode 1 returns the suppressed click safely). Still cursor-
-    # relative and click-driven: SnappyAI never clicks on its own.
-    # Ignored with a warning while accent_color is off. Console
-    # command "a" toggles this at runtime.
+
+
+
+
+
+
+
     "accent_only": False,
 
-    # Auto-click ("click the buttons for me"): the ONLY feature that
-    # acts without a user gesture - turning this switch ON is itself the
-    # request (the mouse1 equivalent). The engine scans the middle of the
-    # screen every auto_click_interval (default 100 ms) for the best item
-    # and clicks it: with an accent colour set, only items carrying that
-    # colour qualify; without one, the highest-contrast item in the centre
-    # square qualifies, held to the stricter auto_click_min_contrast gate.
-    #
-    # SAFETY IS STRUCTURAL, not advisory:
-    #   * colour-free mode clicks ONLY crisp, clearly drawn items (the
-    #     min_contrast gate above), never blurry background noise;
-    #   * exclude_color still wins: a colour on the never-click list
-    #     removes the item from the scan entirely;
-    #   * it never clicks inside Snappy AI's own windows;
-    #   * it never clicks while PAUSED - Launch is still the only gate;
-    #   * max clicks per session, a repeat guard on the same spot and a
-    #     settle delay cap how fast it can act.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     "auto_click": False,
 
-    # Seconds between automatic scans. The default is 100 ms: the loop
-    # re-scans the centre square ten times a second and fires at the
-    # first qualifying item (repeat guard + settle below still pace it).
-    "auto_click_interval": 0.1,
 
-    # Contrast gate for an auto-click target, on the same scale as
-    # min_contrast. This is what makes colour-free auto-clicking safe:
-    # with no accent colour set, ONLY items this crisp are eligible.
-    # Raise it and only strong, crisp items qualify.
-    "auto_click_min_contrast": 60,
 
-    # Safety cap: automatic clicks per launched session. The engine stops
-    # auto-clicking (and says so) once the cap is reached.
-    "auto_click_max_clicks": 10,
 
-    # How long the cursor rests on the target before the click lands, so a
-    # hover/pressed state under the pointer is visible to the app first.
-    "auto_click_settle_ms": 120,
 
-    # Do not click the same spot again while it stays on screen - the
-    # scan-after-click cooldown. Without it a button that does not change
-    # on activation would be clicked over and over.
-    "auto_click_repeat_px": 60,
 
-    # Search radius around the centre of the screen, in logical pixels.
-    "auto_click_radius": 200,
 
-    # Follow memory ("colour following"): after a successful snap, the
-    # item's colour and position are remembered for follow_seconds;
-    # similar-looking or same-place items then get a scoring boost, so
-    # repeated work on one control (a scrollbar thumb, a dialog button)
-    # keeps snapping to it. Learned only from YOUR successful clicks,
-    # decays over time, never clicks on its own. Console "f" toggles.
     "follow_enabled": False,
     "follow_boost": 1.0,
     "follow_seconds": 20,
 
-    # Cursor glide: 0 = instant snap (default, lowest latency).
-    # 40-120 animates the cursor move over that many milliseconds so you
-    # can follow where it went. Moving the mouse physically aborts a
-    # glide immediately; in classic mode your click is then delivered
-    # wherever the cursor ended up, never swallowed.
+
+
+
+
+
     "glide_ms": 0,
 
-    # Snap point offset, in logical pixels. The engine normally aims at
-    # the middle of the item; these move that point - positive X goes
-    # right, positive Y goes down (negative values go left/up). For a
-    # control whose middle is dead (a split button, a slider track, an
-    # icon whose clickable corner sits off-centre), dial the click onto
-    # the live spot once instead of fighting every snap. Applies to
-    # classic snaps, guide moves and auto-clicks alike.
+
+
+
+
+
+
+
     "snap_offset_x": 0,
     "snap_offset_y": 0,
 
-    # Round-2 colour handling (see vision.py). All three default on:
-    # they only ever make matching stricter about the RIGHT things
-    # (lighting casts, shade states, speckle noise), never looser about
-    # hues - a wrong hue still cannot win. Turn one off only to A/B a
-    # misbehaving screen against the older behaviour.
-    #
-    # color_adapt: white-balance each item against its own background
-    # before matching, so night light and theme casts stop shifting
-    # your colour out of tolerance.
+
+
+
+
+
+
+
+
+
     "color_adapt": True,
-    # accent_variants: also test brighter/dimmer copies of your colour,
-    # so hover, pressed and dimmed states match without widening the
-    # hue tolerance.
+
+
+
     "accent_variants": True,
-    # accent_coherent: accent-coloured pixels must connect into a blob
-    # to count - scattered dither/compression specks never qualify an
-    # item, boost it, or exclude it.
+
+
+
     "accent_coherent": True,
 
-    # v8.39: the product ships silent and sightless by design;
-    # diagnostics live in the log bus instead.
 
-    # Interface language (i18n.codes()). Switched live from the
-    # Language button in the footer; persisted like every setting.
+
+
+
+
     "language": "en",
 
-    # Input behaviour.
-    # block_bound_keys = false (default): modifier-less bindings like
-    # "1" or "v" work SYSTEM-WIDE through a pass-through keyboard hook:
-    # the action fires in every app AND the key still reaches the
-    # focused app, so typing is never blocked. Note: typing that key
-    # mid-sentence also fires its action - that is the trade-off.
-    # true: classic hotkey behaviour - single-key bindings fire
-    # everywhere but swallow those keys while typing.
-    "block_bound_keys": False,
 
-    # Hold-to-follow: while the left button is held right after a snap
-    # (or re-pressed on the remembered item), the cursor keeps following
-    # that item's colour - stabilises drags like scrollbar thumbs.
-    # Released automatically on button-up; never clicks on its own.
+
+
+
+
+
+
+
+
+
+
+
+    "trigger_button": "mouse1",
+    "options_button": "mouse2",
+    "shift_bypass": True,
+    "bypass_key": "shift",
+    "bypass_pad": "",
+
+
+
+
+
     "hold_follow": True,
 
-    # Rapid-click snapping (LEFT button only). Off (default): while a
-    # snap is still being processed, further left clicks pass straight
-    # through to Windows - only the first click of a burst is assisted.
-    # On: EVERY left click is assisted, so continuous clicking or
-    # double-clicking constantly snaps to icons/colours instead of
-    # leaking unassisted clicks (Mode 1; Mode 2 already assists every
-    # click). Never affects the right button - it has its own
-    # mouse2_action / mouse2_hold_action settings below.
+
+
+
+
+
+
+
+
+
+
+    "center_blind_area": 900,
+
+
+
+
+
+
+
+    "center_max_step": 160,
+
+
+
+
+
+
+    "subject_focus_bias": 0,
+
+
+
+
+
+
+
+
+
+    "motion_sense": 0,
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    "subject_priority": False,
+
+
+
+
+
+
+
+
+
     "rapid_click_snap": False,
 
-    # Programmable RIGHT-button side action (the right button itself
-    # ALWAYS keeps its normal Windows function - we only react
-    # alongside, never suppress it):
-    # 1 = clear the current follow task, 2 = follow the last snapped
-    # item's colour, 3 = 2 s colour pick then follow it, 4 = nothing.
-    # Timing: fires on button-DOWN while mouse2_hold_action is 4
-    # (classic behaviour); once a hold action is configured, a short
-    # press fires this on button-UP instead, so click and hold can be
-    # told apart.
+
+
+
+
+
+
+
+
+
     "mouse2_action": 4,
 
-    # Same choices as mouse2_action (1 = clear the current follow
-    # task, 2 = follow the last snapped item's colour, 3 = 2 s colour
-    # pick then follow it, 4 = nothing), but fired when the right
-    # button is kept HELD for ~0.45 s instead of clicked. A press is
-    # either a click or a hold, never both. 4 (default) = nothing -
-    # with that, mouse2_action keeps its classic press-time behaviour
-    # unchanged. The right button itself always keeps its normal
-    # Windows function.
+
+
+
+
+
+
+
+
     "mouse2_hold_action": 4,
 
-    # What the follow memory is allowed to learn:
-    # "accent" = only items matching accent_color (a misclick that snaps
-    #            to some other item does NOT poison the memory);
-    # "any"    = every successful snap (old behaviour).
-    # With accent_color off, "accent" behaves like "any".
+
+
+
+
+
     "follow_learn": "accent",
 
-    # Key bindings. Format: "ctrl+alt+s", "f5", "space", "1", ...
-    # Modifiers: ctrl, alt, shift, win. Applied on GUI save (Apply).
-    # v8.27: the radius / feedback / reload / quit hotkeys are gone;
-    # the remaining map is launch, pause, the two mode keys, the
-    # recorder pair and the playback keys.
+
+
+
+
+
     "key_launch": "ctrl+l",
     "key_pause": "ctrl+p",
     "key_mode1": "1",
@@ -401,20 +452,50 @@ DEFAULT_CONFIG = {
     "key_play4": "ctrl+4",
     "key_play5": "ctrl+5",
 
-    # Macros (GUI Macros tab, v8.27): five slots of TWO settings each -
-    # trigger spec and the combo sent per press. One blocked trigger
-    # press injects exactly one combo press while launched ("B means
-    # Ctrl+C" - the focused app never sees the bare trigger); paused,
-    # the keyboard is entirely yours. Empty trigger or action = off.
+
+
+
+
+
     "macro1_key": "",       "macro1_action": "",
     "macro2_key": "",       "macro2_action": "",
     "macro3_key": "",       "macro3_action": "",
     "macro4_key": "",       "macro4_action": "",
     "macro5_key": "",       "macro5_action": "",
 
-    # Recording playback (v8.27) has no global transport settings:
-    # each recording in macros.json carries its own "loop" flag
-    # (play once / repeat until stopped), set in the Macros tab.
+    "controller_input": False,
+    "pad_index": -1,
+    "pad_output": "auto",
+    "pad_drive": True,
+    "pad_deadzone": 20,
+    "pad_sensitivity": 1.0,
+    "pad_trigger_threshold": 128,
+    "pad_poll_hz": 125,
+    "pad_rumble": True,
+    "pad_click_button": "rt",
+    "pad_right_button": "lt",
+    "pad_emulate": gamepad.PAD_EMU_DEFAULT,
+
+    "pad_launch": "start",
+    "pad_pause": "back",
+    "pad_mode1": "",
+    "pad_mode2": "",
+    "pad_record": "ls+rs",
+    "pad_record_stop": "",
+    "pad_play": "",
+    "pad_play1": "",
+    "pad_play2": "",
+    "pad_play3": "",
+    "pad_play4": "",
+    "pad_play5": "",
+
+    "pad_macro1_key": "",   "pad_macro1_action": "",
+    "pad_macro2_key": "",   "pad_macro2_action": "",
+    "pad_macro3_key": "",   "pad_macro3_action": "",
+    "pad_macro4_key": "",   "pad_macro4_action": "",
+    "pad_macro5_key": "",   "pad_macro5_action": "",
+
+
 
     "config_version": 8,
 }
@@ -423,10 +504,6 @@ RADIUS_STEPS = [(80, "small"), (150, "medium"), (250, "large")]
 
 
 def config_dir():
-    """
-    Store config next to the script if writable.
-    Otherwise use AppData on Windows or home directory elsewhere.
-    """
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:
@@ -452,16 +529,6 @@ def config_dir():
 
 
 class SafeConfigReader:
-    """
-    Reads only safe accessibility keys from an optional config.ini.
-
-    Example config.ini:
-
-        [accessibility]
-        mode = 1
-        radius = 250
-        accent_color = blue
-    """
 
     def __init__(self, path):
         self.path = path
@@ -472,32 +539,35 @@ class SafeConfigReader:
         if not os.path.exists(self.path):
             return overrides
 
-        parser = ConfigParser(strict=False)
-        parser.optionxform = str
+        parser = ConfigParser(strict=False, interpolation=None)
+        parser.optionxform = lambda s: s.lower()
 
         try:
             parser.read(self.path, encoding="utf-8")
         except Exception:
             return overrides
 
-        # v8.49: "DEFAULT" was listed here, but
-        # ConfigParser.has_section("DEFAULT") is ALWAYS False - the defaults
-        # pseudo-section is not a section in configparser's API - so that
-        # entry was unreachable and a config.ini holding ONLY [DEFAULT] was
-        # silently ignored. Defaults are now read explicitly, and they still
-        # work as a fallback for the real sections (has_option/get already
-        # consult them, which is why [accessibility] + [DEFAULT] appeared to
-        # work while [DEFAULT] alone did not).
+
+
+
+
+
+
+
+
         sections = [s for s in ("accessibility", "snappyai")
                     if parser.has_section(s)]
 
         def _collect(section, has_option, getter):
             for key, default in DEFAULT_CONFIG.items():
                 if key in build_secrets.SENSITIVE_KEYS:
-                    continue        # never read from a file next to the exe
+                    continue
                 if not has_option(key):
                     continue
-                raw = getter(key)
+                try:
+                    raw = getter(key)
+                except Exception:
+                    continue
                 try:
                     overrides[key] = self._convert(raw, default)
                 except Exception:
@@ -514,6 +584,14 @@ class SafeConfigReader:
                      lambda k: k in defaults,
                      lambda k: defaults[k])
 
+
+        if "input_backend" in overrides:
+            val = str(overrides["input_backend"]).strip().lower()
+            if val == "interception":
+                overrides["input_backend"] = "driver"
+            elif val == "rebind":
+                overrides["input_backend"] = "server"
+
         for section, key, raw in bad:
             log("config.ini: ignored invalid %s in [%s]: %r"
                 % (key, section, raw))
@@ -525,12 +603,15 @@ class SafeConfigReader:
         raw = raw.strip()
 
         if isinstance(default, bool):
-            return raw.lower() in ("1", "true", "yes", "on")
+            val = raw.lower()
+            if val not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
+                raise ValueError("not a boolean")
+            return val in ("1", "true", "yes", "on")
 
         if isinstance(default, int):
-            # v8.67: round instead of truncate (150.7 -> 151, not 150)
-            # and warn on a fractional hand edit instead of silently
-            # misbehaving - the file's own philosophy.
+
+
+
             val = float(raw)
             rounded = int(round(val))
             if rounded != val:
@@ -544,14 +625,7 @@ class SafeConfigReader:
         return raw
 
 
-def _coerce_value(raw, default):
-    """
-    Validate and convert one config value against its default's type.
-
-    Returns (ok, value). Bad values are rejected with a warning by the
-    caller instead of crashing or silently keeping garbage - a hand-
-    edited config file must never take the tool down.
-    """
+def _coerce_value(raw, default, key=None):
     try:
         if isinstance(default, bool):
             if isinstance(raw, bool):
@@ -568,9 +642,9 @@ def _coerce_value(raw, default):
             if isinstance(raw, int):
                 return True, raw
             if isinstance(raw, float):
-                return True, int(raw)
+                return True, int(round(raw))
             if isinstance(raw, str):
-                return True, int(float(raw.strip()))
+                return True, int(round(float(raw.strip())))
             return False, None
 
         if isinstance(default, float):
@@ -582,16 +656,18 @@ def _coerce_value(raw, default):
                 return True, float(raw.strip())
             return False, None
 
-        # String-valued keys (mode names, feedback, accent colour, ...).
+
         if isinstance(raw, str):
             return True, raw
         if isinstance(raw, (list, tuple)):
-            # accent_color also accepts [r, g, b] from hand-edited JSON.
+            if key not in ("accent_color", "exclude_color"):
+                return False, None
             return True, raw
+
         return False, None
     except (ValueError, TypeError, OverflowError):
-        # OverflowError: hand-edited "1e999" -> float inf -> int() would
-        # raise; a bad value must warn and fall back, never crash.
+
+
         return False, None
 
 
@@ -611,20 +687,38 @@ class Config:
                 data = json.load(fh)
 
             if isinstance(data, dict):
+                _RENAMED_KEYS = {
+                    "humanoid_head_bias": "subject_focus_bias",
+                    "game_shape_priority": "subject_priority",
+                    "crosshair_blind_area": "center_blind_area",
+                    "crosshair_max_step": "center_max_step",
+                    "rebind_url": "server_url",
+                }
+                for _old, _new in _RENAMED_KEYS.items():
+                    if _old in data and _new not in data:
+                        data[_new] = data[_old]
+                    elif _old in data:
+                        log("config.json: both %s and %s present; using %s."
+                            % (_old, _new, _new))
+                if str(data.get("input_backend", "")).strip().lower() == "interception":
+                    data["input_backend"] = "driver"
+                elif str(data.get("input_backend", "")).strip().lower() == "rebind":
+                    data["input_backend"] = "server"
                 for key in DEFAULT_CONFIG:
                     if key in data:
                         ok, value = _coerce_value(data[key],
-                                                  DEFAULT_CONFIG[key])
+                                                   DEFAULT_CONFIG[key], key)
                         if ok:
                             self.values[key] = value
                         else:
                             log("config.json: ignored invalid %s = %r"
                                 % (key, data[key]))
 
-                # v8.49 and older carried the deployment constants as
-                # settings. They are build constants now; drop whatever a
-                # previous version left behind so an upgraded config.json
-                # stops carrying payment links and the repo.
+
+
+
+
+
                 stale = [k for k in build_secrets.SENSITIVE_KEYS
                          if k in data]
                 if stale:
@@ -634,17 +728,33 @@ class Config:
                         "an older version (%s); these now come from the "
                         "build, not from settings."
                         % (len(stale), ", ".join(sorted(stale))))
-                    try:
-                        self.save()
-                    except Exception:
-                        pass
 
-                # v8.4 and older called this bare_mode_keys.
-                if data.get("bare_mode_keys") in (True, "true", "1", 1):
-                    self.values["block_bound_keys"] = True
 
-                # v8.16 and older had a sixth combo-macro slot; v8.17
-                # replaced it with the recording library (macros.json).
+
+
+
+
+
+
+
+                retired = ("auto_click_interval",
+                           "auto_click_min_contrast",
+                           "auto_click_max_clicks",
+                           "auto_click_settle_ms",
+                           "auto_click_repeat_px",
+                           "auto_click_radius",
+                           "block_bound_keys", "bare_mode_keys")
+                dropped = [k for k in retired if k in data]
+                if dropped:
+                    for k in dropped:
+                        self.values.pop(k, None)
+                    log("config.json: removed %d retired setting(s) "
+                        "(%s); these are fixed behaviour now, not "
+                        "settings." % (len(dropped),
+                                       ", ".join(sorted(dropped))))
+
+
+
                 if str(data.get("macro6_key") or "").strip() \
                         or str(data.get("macro6_action") or "").strip():
                     log("config: macro6 was removed in v8.17 (five combo "
@@ -657,12 +767,12 @@ class Config:
                     version = 1
 
                 if version < 8:
-                    # v8.27: the old migrations used to force
-                    # feedback/start_paused values - both keys are gone
-                    # (feedback removed, start-paused is now the fixed
-                    # behaviour), so migration is just the version bump.
+
+
+
+
                     self.values["config_version"] = 8
-                    self.save()
+                     # self.save()  # moved after _sanitize
         except (OSError, ValueError):
             pass
 
@@ -675,21 +785,28 @@ class Config:
 
         self._sanitize()
 
-    # Sane bounds for numeric settings, clamped with a warning instead of
-    # crashing or silently misbehaving (idea from validated config
-    # readers: bad numbers should never take the tool down).
+
+
+
     _RANGES = {
         "radius": (40, 400),
-        # Detection gates had no bounds at all: a hand-edited
-        # max_dim = -5 silently blinded the whole engine (every item
-        # fails a negative cap), and similarly degenerate values
-        # elsewhere. Same clamp-with-warning philosophy as the rest -
-        # in-range configs behave bit-for-bit as before.
+        "mode": (1, 2),
+
+
+
+
+
         "contrast_threshold": (1, 200),
         "min_contrast": (1, 200),
         "min_area": (1, 100000),
         "max_area": (100, 1000000),
         "max_dim": (10, 2000),
+
+        "center_blind_area": (0, 100000),
+
+        "center_max_step": (0, 500),
+        "subject_focus_bias": (0, 100),
+        "motion_sense": (0, 100),
         "merge_distance": (0, 64),
         "accent_tolerance": (4, 90),
         "accent_soft": (0, 100),
@@ -701,78 +818,121 @@ class Config:
         "stall_pause_seconds": (0.0, 3.0),
         "on_target_dist": (0, 100),
         "motion_lead_ms": (0, 300),
-        # Colour-stage scan budget. The old hard-coded 120 ms deadline
-        # cut the colour scoring short on busy screens ("Colour stage
-        # cut short" log spam) so accent_only/exclude_color items failed
-        # closed - visible especially with auto-click's wide multi-accent
-        # lists and radius 400. Raising it only lets more items get
-        # scored; clicks never wait longer than the scan actually takes.
+
+
+
+
+
+
         "scan_budget_ms": (60, 2000),
-        # The snap offset is deliberately bounded: it re-aims the click
-        # within the neighbourhood of the item, it must never be able to
-        # send a click across the screen on its own.
+
+
+
         "snap_offset_x": (-200, 200),
         "snap_offset_y": (-200, 200),
-        # Auto-click bounds. The floors/ceilings here are SAFETY limits,
-        # not taste: the interval may now go down to 100 ms (the user's
-        # requested cadence) but never below it, and an unbounded cap
-        # would turn a misconfigured setup into runaway input.
-        "auto_click_interval": (0.1, 60.0),
-        "auto_click_min_contrast": (20, 150),
-        "auto_click_max_clicks": (1, 200),
-        "auto_click_settle_ms": (0, 2000),
-        "auto_click_repeat_px": (0, 400),
-        "auto_click_radius": (40, 600),
+
+        "pad_index": (-1, 3),
+        "pad_deadzone": (0, 60),
+        "pad_sensitivity": (0.1, 4.0),
+        "pad_trigger_threshold": (1, 255),
+        "pad_poll_hz": (30, 500),
     }
 
+    _PAD_SPECS = ("pad_launch", "pad_pause", "pad_mode1", "pad_mode2",
+                  "pad_record", "pad_record_stop", "pad_play",
+                  "pad_play1", "pad_play2", "pad_play3", "pad_play4",
+                  "pad_play5", "pad_macro1_key", "pad_macro2_key",
+                  "pad_macro3_key", "pad_macro4_key", "pad_macro5_key",
+                  "bypass_pad")
+
+    _PAD_SINGLE = ("pad_click_button", "pad_right_button")
+
+    _CHOICES = {
+        "accent_matcher": ("hsv", "oklab"),
+        "capture_backend": ("auto", "dxcam", "mss", "wgc"),
+        "input_backend": ("win32", "driver", "server"),
+        "follow_learn": ("accent", "any"),
+        "theme": ("light", "dark"),
+        "pad_output": ("auto", "vigem", "emulate"),
+        "trigger_button": MOUSE_BUTTONS,
+        "options_button": MOUSE_BUTTONS,
+    }
+
+    _LEGACY_CHOICES = {
+        "input_backend": {"interception": "driver", "rebind": "server"},
+        "pad_output": {"vigembus": "vigem", "emulated": "emulate",
+                       "km": "emulate", "keyboard": "emulate"},
+    }
+
+    @classmethod
+    def _normalize_choice(cls, key, raw):
+        """(value, accepted) for a setting with a fixed vocabulary.
+
+        Shared by _sanitize() and set() so a value written at runtime cannot
+        be one that no consumer understands - input_backend used to be
+        validated on load only, so set() could park "driver" in the config and
+        make_input_backend() silently fell back to Win32.
+        """
+        allowed = cls._CHOICES.get(key)
+        if allowed is None:
+            return raw, True
+        value = str(raw).strip().lower() if raw is not None else ""
+        value = cls._LEGACY_CHOICES.get(key, {}).get(value, value)
+        if value not in allowed:
+            return DEFAULT_CONFIG[key], False
+        return value, True
+
     def sanitize(self):
-        """Public name for _sanitize(): main.py and gui.py both call it
-        from outside the class, and a leading underscore on the one
-        validation entry point invited exactly that."""
         return self._sanitize()
 
     def _sanitize(self):
         for key, (lo, hi) in self._RANGES.items():
             try:
                 value = self.values[key]
-                clamped = type(lo)(min(hi, max(lo, value)))
+                clamped = min(hi, max(lo, value))
+                if isinstance(lo, int):
+                    clamped = min(hi, max(lo, int(round(clamped))))
+                else:
+                    clamped = type(lo)(clamped)
                 if clamped != value:
                     log("config: %s %r clamped to %r" % (key, value, clamped))
                 self.values[key] = clamped
             except (KeyError, TypeError, ValueError):
-                # Fall back to the default. Guarded: a _RANGES entry for a
-                # key that is no longer in DEFAULT_CONFIG (a retired
-                # setting) must not turn validation itself into a crash.
+
+
+
                 if key in DEFAULT_CONFIG:
                     self.values[key] = DEFAULT_CONFIG[key]
                 else:
                     self.values.pop(key, None)
 
-        # String-valued keys with a fixed vocabulary: a typo must never
-        # silently disable a feature (an unknown capture_backend used to
-        # degrade to "always mss", an unknown accent_matcher to a guess).
-        _CHOICES = {
-            "accent_matcher": ("hsv", "oklab"),
-            "capture_backend": ("auto", "dxcam", "mss", "wgc"),
-            "input_backend": ("win32", "interception"),
-        }
-        for key, allowed in _CHOICES.items():
+
+
+        if self.values.get("min_area", 0) > self.values.get("max_area", 0):
+            log("config: min_area %r is above max_area %r - nothing could "
+                "match; using max_area for both."
+                % (self.values.get("min_area"), self.values.get("max_area")))
+            self.values["min_area"] = self.values["max_area"]
+
+
+
+
+        for key in self._CHOICES:
             raw = self.values.get(key, DEFAULT_CONFIG[key])
-            value = str(raw).strip().lower() if raw is not None else ""
-            if value not in allowed:
+            value, ok = self._normalize_choice(key, raw)
+            if not ok:
                 log("config: %s %r unknown; using %r"
                     % (key, raw, DEFAULT_CONFIG[key]))
-                value = DEFAULT_CONFIG[key]
             self.values[key] = value
 
-        # accent_only / auto_click without an accent colour: the ENGINE
-        # already degrades gracefully (scan_region forces the accent
-        # gate off when no colour parses; the auto-click worker refuses
-        # to arm and says why), so the stored values are left alone and
-        # only a warning is logged. Forcing them off here would destroy
-        # user intent - clearing the colour to try something, then
-        # setting it back, must restore the previous behaviour without
-        # re-flipping switches. No setting rewrites another setting.
+
+
+
+
+
+
+
+
         if self.values.get("accent_only") \
                 and not parse_accents(self.values.get("accent_color")):
             log("config: accent_only is on but accent_color is off - "
@@ -783,28 +943,64 @@ class Config:
                 and not parse_accents(self.values.get("accent_color")):
             log("config: auto_click is on with no accent colour - it "
                 "will click the highest-contrast item in the centre "
-                "square instead (raise auto_click_min_contrast if it "
-                "picks too eagerly).")
+                "square instead.")
 
-        if str(self.values.get("follow_learn", "accent")).lower() \
-                not in ("accent", "any"):
-            log("config: follow_learn %r invalid; using 'accent'"
-                % (self.values.get("follow_learn"),))
-            self.values["follow_learn"] = "accent"
 
-        if str(self.values.get("theme", "light")).lower() \
-                not in ("light", "dark"):
-            self.values["theme"] = "light"
 
-        # An unknown language code (hand-edited file, a locale removed
-        # in a newer build) must fall back, never show raw keys.
         lang = str(self.values.get("language", "en")).strip().lower()
-        self.values["language"] = lang if lang in i18n.codes() else "en"
+        if lang not in i18n.codes():
+            log("config: unknown language %r, defaulting to en" % (lang,))
+            lang = "en"
+        self.values["language"] = lang
 
-        # Right-button click AND hold actions share one vocabulary.
+
+        for key in self._PAD_SPECS:
+            raw = str(self.values.get(key, "") or "").strip()
+            if not raw:
+                self.values[key] = ""
+                continue
+            if gamepad.parse_spec(raw) is None:
+                log("config: %s %r is not a controller button or a "
+                    "combination of them (try 'a', 'rb+a', 'ls+rs'); that "
+                    "action stays unbound." % (key, raw))
+                self.values[key] = ""
+            else:
+                self.values[key] = gamepad.describe_spec(raw)
+
+        for key in self._PAD_SINGLE:
+            raw = str(self.values.get(key, "") or "").strip()
+            index = gamepad.parse_token(raw)
+            if index is None:
+                log("config: %s %r is not a single controller button; using "
+                    "%r." % (key, raw, DEFAULT_CONFIG[key]))
+                self.values[key] = DEFAULT_CONFIG[key]
+            else:
+                self.values[key] = gamepad.PAD_BUTTONS[index]
+
+        # One button cannot hold both mouse roles: the hook classifies a press
+        # as trigger OR options, so a collision would silently drop one of
+        # them. The trigger wins (nothing works without it) and options goes
+        # back to its default, with a line in the log to say so.
+        if (str(self.values.get("options_button"))
+                == str(self.values.get("trigger_button"))):
+            log("config: options_button %r is the same as trigger_button; "
+                "using %r for the extra-options role."
+                % (self.values.get("options_button"),
+                   DEFAULT_CONFIG["options_button"]))
+            self.values["options_button"] = DEFAULT_CONFIG["options_button"]
+
+        raw = str(self.values.get("bypass_key", "shift") or "").strip()
+        canonical = hotkeys.describe_bypass_spec(raw)
+        if not canonical:
+            log("config: bypass_key %r is not a key, a modifier or a "
+                "combination of them; using %r."
+                % (raw, DEFAULT_CONFIG["bypass_key"]))
+            canonical = str(DEFAULT_CONFIG["bypass_key"])
+        self.values["bypass_key"] = canonical
+
         for key in ("mouse2_action", "mouse2_hold_action"):
             try:
-                m2 = int(self.values.get(key, 4))
+                 m2 = int(round(self.values.get(key, 4)))
             except (TypeError, ValueError):
                 m2 = 4
             if m2 not in (1, 2, 3, 4):
@@ -813,27 +1009,15 @@ class Config:
                 m2 = 4
             self.values[key] = m2
 
-    def export_to(self, path):
-        """Write the current settings to a shareable JSON file.
-
-        Export is the one path that puts this data somewhere the user
-        will deliberately hand to another person, so it goes through the
-        same SENSITIVE_KEYS filter as save() - an exported settings file
-        must be safe to e-mail."""
+    def export_to(self, path, values=None):
         try:
             with open(path, "w", encoding="utf-8") as fh:
-                json.dump(self._public_values(), fh, indent=2)
+                json.dump(self._public_values(values), fh, indent=2)
             return True, i18n.L("st.exported", path)
         except OSError as exc:
             return False, i18n.L("st.export_fail", exc)
 
     def import_from(self, path):
-        """
-        Load settings from an exported JSON file. Every value is
-        validated and coerced against the defaults; unknown or invalid
-        keys are ignored with a warning. Changes stay in memory until
-        the caller saves.
-        """
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -848,18 +1032,19 @@ class Config:
 
         with self.lock:
             for key in DEFAULT_CONFIG:
-                if key == "config_version" or key not in data:
+                if key not in data:
                     continue
                 if key in build_secrets.SENSITIVE_KEYS:
-                    skipped.append(key)      # never re-imported from a file
+                    skipped.append(key)
                     continue
-                ok, value = _coerce_value(data[key], DEFAULT_CONFIG[key])
+                ok, value = _coerce_value(data[key], DEFAULT_CONFIG[key], key)
                 if ok:
                     self.values[key] = value
-                    applied += 1
+                    imported_keys.append(key)
                 else:
                     skipped.append(key)
             self._sanitize()
+            applied = len([k for k in imported_keys if k in self.values])
 
         if skipped:
             log("import: ignored invalid %s" % ", ".join(skipped))
@@ -870,26 +1055,11 @@ class Config:
                 "st.imported_ignored", ", ".join(skipped)))
 
     def reload(self):
-        """
-        Re-read config.json and config.ini from disk while running.
-        Runtime state (like mode switched via bare keys) is preserved
-        only if it was saved; values from CLI flags are session-only and
-        revert to what the files say.
-        """
         with self.lock:
             self.values = dict(DEFAULT_CONFIG)
             self._load()
 
     def _public_values(self, values=None):
-        """The settings that may be written to disk or exported.
-
-        Deployment constants (build_secrets) are filtered out here as a
-        second layer: they are no longer in DEFAULT_CONFIG, so nothing
-        should ever put one into self.values - but save() and export_to()
-        are the two ways data leaves the process, and a credential in
-        either is exactly the leak this guard exists to make impossible.
-        Anything stripped is logged once, because it means a caller set a
-        key it should not have."""
         src = self.values if values is None else values
         out = {}
         dropped = []
@@ -898,11 +1068,6 @@ class Config:
                 dropped.append(key)
                 continue
             out[key] = value
-        if dropped and not self._leak_warned:
-            type(self)._leak_warned = True
-            log("config: refused to persist %s - deployment constants live "
-                "in build_secrets.py, never in config.json."
-                % ", ".join(sorted(dropped)))
         return out
 
     _leak_warned = False
@@ -918,24 +1083,33 @@ class Config:
         return self.values.get(key, default)
 
     def set(self, key, value, save=True):
-        """Store one setting, clamped like a value read from disk.
-
-        Clamping here (not only in _sanitize) closes a real hole: the
-        console commands and the GUI pill switches all go through set()
-        with save=True, so before this an out-of-range value reached
-        config.json and the engine untouched until the next reload."""
         if key in build_secrets.SENSITIVE_KEYS:
             log("config.set(%r) ignored - that is a build constant, not a "
                 "setting." % (key,))
             return
+        if key not in DEFAULT_CONFIG:
+            log("config.set(%r) ignored - unknown key" % (key,))
+            return
+
         with self.lock:
             bounds = self._RANGES.get(key)
             if bounds is not None:
                 try:
                     lo, hi = bounds
-                    value = type(lo)(min(hi, max(lo, value)))
+                    clamped = min(hi, max(lo, value))
+                    if isinstance(lo, int):
+                        clamped = min(hi, max(lo, int(round(clamped))))
+                    else:
+                        clamped = type(lo)(clamped)
+                    value = clamped
                 except (TypeError, ValueError):
-                    pass                     # _sanitize() will fall back
+                    log("config: %s %r invalid; using %r"
+                        % (key, value, DEFAULT_CONFIG.get(key)))
+                    value = DEFAULT_CONFIG.get(key)
+            raw = value
+            value, accepted = self._normalize_choice(key, value)
+            if not accepted:
+                log("config: %s %r unknown; using %r" % (key, raw, value))
             self.values[key] = value
             if save:
                 self.save()
@@ -943,6 +1117,9 @@ class Config:
     def cycle(self, key, steps):
         current = self.get(key)
         values = [v for v, _ in steps]
+
+        if not steps:
+            return current
 
         if current in values:
             idx = values.index(current)

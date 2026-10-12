@@ -12,15 +12,17 @@ events entirely - clicks simply never arrive there.
 Interception injects at the driver layer, below Raw Input, so those
 applications see the click as genuine hardware. The price: it needs a
 signed kernel driver installed by the user (interception.exe install +
-reboot) and two DLLs on PATH or beside this app. That friction is why
-Win32 stays the DEFAULT and Interception is strictly opt-in.
+reboot). No DLL is involved anywhere: strokes go straight to the
+driver, which is also why driver updates can never desync a bundled
+library. That friction is why Win32 stays the DEFAULT and
+Interception is strictly opt-in.
 
 Design rules (mirrors the capture_backend pattern)
 --------------------------------------------------
 - Pure stdlib ctypes; imports cleanly on any OS (the GUI reads
-  available() to decorate its dropdown), loads the DLL only when the
-  user actually selects "interception".
-- NEVER fatal: any failure (no DLL, no driver, device busy, send
+  available() to decorate its dropdown), touches the driver only
+  when the user actually selects "interception".
+- NEVER fatal: any failure (no driver, device busy, send
   refused) logs once and degrades to Win32 for that call AND for all
   future calls, so a half-installed setup can never eat a click.
 - Coordinates: absolute SetCursorPos is emulated with per-move relative
@@ -30,6 +32,9 @@ Design rules (mirrors the capture_backend pattern)
 
 Backend contract (what assist.py / win32rt.py consume):
     move(x, y)             teleport/warp the cursor to screen (x, y)
+    nudge(dx, dy)          RELATIVE motion step (game-aim steering: the
+                           view rotates by the delta; the cursor is never
+                           teleported, so raw-input games stay in sync)
     button(down)           left-button transition (True = press)
     ok_for_button()        True if a real button event may be sent here
     note_failure(where)    log-once + permanent degrade to Win32
@@ -37,12 +42,13 @@ Backend contract (what assist.py / win32rt.py consume):
 """
 
 import ctypes
-import os
-import sys
 import threading
 import time
 
+import gamepad
 from core import IS_WINDOWS, log
+
+DEFAULT_SERVER_URL = "ws://127.0.0.1:19561"
 
 
 class _Timeout(Exception):
@@ -68,7 +74,7 @@ def _call_with_timeout(fn, timeout, *args):
     def run():
         try:
             box["result"] = fn(*args)
-        except Exception as exc:      # e.g. OSError from a bad handle
+        except Exception as exc:
             box["error"] = exc
 
     t = threading.Thread(target=run, daemon=True)
@@ -79,6 +85,47 @@ def _call_with_timeout(fn, timeout, *args):
     if "error" in box:
         raise box["error"]
     return box.get("result")
+
+
+def _set_mouse_accel(enabled):
+    """Set Enhance-pointer-precision on/off; returns the previous state
+    (None when it could not be read, so callers can still restore).
+
+    interception-python wraps every relative stroke in this because
+    Windows ballistics scale fast synthetic flicks unpredictably.
+    Import-safe anywhere: all failures are silent no-ops.
+    """
+    try:
+        import ctypes as _c
+        prev = (_c.c_int * 3)()
+        _c.windll.user32.SystemParametersInfoA(0x3, 0, prev, 0)
+        was = bool(prev[2])
+        prev[2] = int(bool(enabled))
+        _c.windll.user32.SystemParametersInfoA(0x4, 0, prev, 0x2)
+        return was
+    except Exception:
+        return None
+
+
+_ROLE_NOTED = set()
+
+
+def note_mouse_role(backend, index):
+    """Say once why a non-left role button is not delivered here.
+
+    The driver and server backends are proven against the left button only.
+    Inventing button constants for a kernel driver, or code names for a server
+    whose vocabulary is not documented in this tree, is exactly the guess that
+    fails silently inside a game - so the role falls back to the standard
+    Windows method (assist._button does that on a False return) and the log
+    says so once instead of per click.
+    """
+    key = (backend, int(index))
+    if key in _ROLE_NOTED:
+        return
+    _ROLE_NOTED.add(key)
+    log("%s: mouse%d cannot be sent through this backend; that role's clicks "
+        "go through the standard Windows method." % (backend, int(index) + 1))
 
 
 class Win32Backend(object):
@@ -98,15 +145,37 @@ class Win32Backend(object):
         import win32rt
         win32rt.user32.SetCursorPos(int(x), int(y))
 
-    def button(self, down):
+    def nudge(self, dx, dy):
+        """One relative motion step (SendInput MOUSEEVENTF_MOVE).
+
+        This is what aim steering uses while a button is held: the
+        delta rotates the view in raw-input games and walks the
+        pointer on the desktop, without ever teleporting it.
+        """
+        import ctypes
         import win32rt
+        dx, dy = int(round(dx)), int(round(dy))
+        if not dx and not dy:
+            return True
         inp = win32rt.INPUT()
         inp.type = win32rt.INPUT_MOUSE
-        inp.u.mi.dwFlags = (win32rt.MOUSEEVENTF_LEFTDOWN if down
-                            else win32rt.MOUSEEVENTF_LEFTUP)
+        inp.u.mi.dx = dx
+        inp.u.mi.dy = dy
+        inp.u.mi.dwFlags = win32rt.MOUSEEVENTF_MOVE
         win32rt.user32.SendInput(1, ctypes.byref(inp),
                                  ctypes.sizeof(win32rt.INPUT))
-        return True   # this backend never degrades - it IS the fallback
+        return True
+
+    def button(self, down, index=0):
+        """One transition of ANY mouse button: 0=left ... 4=second side.
+
+        Through win32rt.inject_mouse rather than a hand-built INPUT here,
+        because the two side buttons need mouseData as well as the XDOWN/XUP
+        flags - and that table already exists and is the same one recording
+        playback uses, so a click and a replayed click cannot diverge.
+        """
+        import win32rt
+        return bool(win32rt.inject_mouse(index, down))
 
     def ok_for_button(self):
         return True
@@ -116,731 +185,292 @@ class Win32Backend(object):
 
 
 class InterceptionBackend(object):
-    """Driver-level injection via the Interception library (opt-in).
+    """Driver-level injection straight into keyboard.sys/mouse.sys (opt-in).
 
-    Loads interception.dll (searched next to this file, next to the
-    executable, then on PATH). Sends relative moves and button state
-    changes to the first mouse device. Any problem degrades PERMANENTLY
-    to Win32 - a click must always reach the desktop somehow.
+    Talks to the kernel driver DIRECTLY through kernel32 (CreateFileA +
+    DeviceIoControl on \\\\.\\interception00..19) with 24-byte HHHHIiiI
+    strokes - byte-identical to what interception-python packs, verified
+    stroke-for-stroke against it on a live driver. NO interception.dll
+    is loaded, needed, or searched for.
+
+    Why not the DLL: its interception_send() takes the *user-side*
+    InterceptionMouseStroke (state, flags, rolling, x, y) and remaps it
+    into the driver layout itself - so handing it an already-packed
+    driver stroke comes out axis-swapped (a +40 X step left as +40 Y),
+    while a hand-rolled struct comes out a motionless no-op that still
+    reports "1 stroke written". Both failure modes are silent and
+    neither can happen when the bytes go straight to the driver.
+
+    Device choice mirrors interception-python's auto_capture_devices:
+    the first mouse slot (interception10..19) whose hardware ID reads
+    back. Sends go through that handle; every other slot is closed -
+    this backend never receives, so parked handles would only leak.
     """
 
     name = "interception"
 
-    # Interception constants (interception.h)
-    _IS_MOUSE_MOVE = 1 << 7      # stroke carries x/y motion
-    _IS_MOUSE_LEFT = 1 << 0      # stroke carries left-button state
-    _FILTER_ALL = 0xFFFF
-    # v8.62: Interception's handle space is 1..20, NOT 1..10. Handles
-    # 1..10 are HARDWARE (observer) devices - they receive real input;
-    # 11..20 are SOFTWARE (target) devices - the ones interception_send
-    # injects through. The official headers define INTERCEPTION_MAX_KEYBOARD
-    # / INTERCEPTION_MAX_MOUSE as 10 each per category, and working
-    # examples loop dev over 1..(2*max) checking is_mouse(dev). Probing
-    # only 1..10 missed every software mouse handle (11..20), which is
-    # why healthy installs reported "the driver lists no mouse".
-    _INTERCEPTION_HARDWARE_DEVICES = 10
-    _INTERCEPTION_MAX_DEVICES = 20
-    _WHEEL_MS = 8                # tiny pause so scroll planes never
-                                 # swallow wheel messages behind a burst
+
+
+    _IOCTL_WRITE = 0x222080
+    _IOCTL_GET_HWID = 0x222200
+    _IOCTL_SET_EVENT = 0x222040
+    _GENERIC_READ = 0x80000000
+    _OPEN_EXISTING = 3
+
+    _MOUSE_MOVE_RELATIVE = 0x000
+    _MOUSE_MOVE_ABSOLUTE = 0x001
+    _MOUSE_LEFT_DOWN = 0x001
+    _MOUSE_LEFT_UP = 0x002
+    _MOUSE_FIRST = 10
+    _MOUSE_SLOTS = 20
+    _STROKE_FMT = "<HHHHIiiI"
+    _STROKE_LEN = 24
 
     def __init__(self, ctx=None):
         self._lock = threading.Lock()
-        self._degraded = False       # sticky: fall back to Win32 forever
-        self._ctx = ctx              # optional pre-built context (tests)
-        self._dll = None
+        self._degraded = False
+        self._k32 = None
+        self._handles = []
+        self._handle = None
         self._dev = None
-        self._shift = 0              # x2y-style mouse-move coalescing debt
-        self._reason = ""            # why init failed (for honest logs)
+        self._shift = 0
+        self._reason = ""
+        self._expected = _ExpectedLedger()
+        self._accel_disabled = False
+        self._prev_accel = None
         if ctx is not None:
-            return                 # test double: nothing to load
+            return
         if not IS_WINDOWS:
             self._degraded = True
             return
         try:
-            # v8.58: EVERY kernel-driver handshake runs behind a timeout
-            # on a daemon thread. interception.dll's DllMain enumerates
-            # devices at LoadLibrary time and interception_create_context
-            # opens the driver handles - either can block indefinitely
-            # when the filter driver is wedged or another program holds
-            # the devices. Until now those calls ran synchronously on
-            # the main GUI thread, so one blocked call meant "process
-            # exists, no window, forever" - exactly the silent-death
-            # report from users whose machine has interception.dll next
-            # to the exe. A timed-out probe parks a harmless daemon
-            # thread instead of parking the whole app.
-            load = _call_with_timeout(self._load_dll, 8.0)
-            if not load:
-                # legitimately "no DLL anywhere" (never a timeout -
-                # those raise _Timeout now): stay silent here and let
-                # make_input_backend() print the accurate one-liner.
-                self._degraded = True
-                return
-            self._dll, frozen = load
-            if frozen:
-                self._reason = ("interception.dll appears frozen by "
-                                "antivirus software (file handle open by "
-                                "another process, scan never finishes)")
-                self._degraded = True
-                return
-            if self._dll is None:
-                self._degraded = True
-                return
-            self._build_signatures()
-            ctx = _call_with_timeout(
-                self._dll.interception_create_context, 8.0)
-            if not ctx:
-                self._reason = ("interception_create_context returned no "
-                                "context - reinstall the driver with "
-                                "'interception.exe install' from an admin "
-                                "prompt and reboot")
-                self._degraded = True
-                return
-            self._context = ctx
-            # v8.59: THE ORDERING BUG BEHIND "device discovery did not
-            # return within 8 s" on HEALTHY installs. Interception's ABI-1
-            # interception_wait()/interception_wait_with_timeout() do NOT
-            # merely poll - the FIRST call attaches the user-mode filter
-            # to every installed device, which requires each device to
-            # answer. An idle mouse answers nothing until real traffic
-            # arrives, so that first wait blocks for its whole timeout.
-            # Our old code called wait_with_timeout(ctx, 0.2) as a
-            # "wake-up" before the static-range walk; with PyInstaller's
-            # GIL switch interval (default 5 ms) the parked worker never
-            # got scheduled inside 8 s and _find_mouse timed out - even
-            # though the driver was perfectly alive (create_context had
-            # just succeeded). The official ABI-1 discovery idiom is the
-            # static-range walk of is_mouse(1..10), which reads the
-            # driver's installed-device TABLE and needs no device
-            # traffic at all. So: discover first; only wake devices via
-            # a short bounded wait if the table says there are none.
-            found = _call_with_timeout(self._find_mouse, 8.0)
-            self._dev = found
-            if self._dev is None:
-                # Cold-boot / idle case: ask the driver to attach to the
-                # devices once (bounded), then re-walk the table. This
-                # runs on a daemon thread behind a timeout, so even a
-                # wedged wait here cannot park the GUI.
-                def _wake_and_walk():
-                    try:
-                        self._dll.interception_wait_with_timeout.argtypes = \
-                            [ctypes.c_void_p, ctypes.c_double]
-                        self._dll.interception_wait_with_timeout(
-                            self._context, 0.2)
-                    except Exception:
-                        pass
-                    return self._find_mouse()
-
-                try:
-                    self._dev = _call_with_timeout(_wake_and_walk, 4.0)
-                except _Timeout:
-                    self._dev = None
-            if self._dev is None:
-                # v8.61 DIAGNOSTIC PROBE: before blaming the driver's
-                # table, send one zero-effect stroke (type 0 = carries
-                # no button or motion state) to handle 1 and read the
-                # return value. This distinguishes "the library loaded
-                # but its handles never reached the kernel driver"
-                # (send returns 0 - e.g. a non-Interception DLL with
-                # same-named stub exports, or a driver whose control
-                # device could not be opened despite create_context
-                # succeeding) from "the driver answers but genuinely
-                # lists no mouse". Without this, both cases print the
-                # same message and users keep reinstalling a perfectly
-                # fine driver.
-                probe = "?"
-                try:
-                    st = self._STROKE()
-                    st.mouse.type = 0
-                    n = self._dll.interception_send(self._context, 1,
-                                                    ctypes.byref(st), 1)
-                    probe = ("interception_send(handle 1) returned %r"
-                             % (n,))
-                except Exception as exc:
-                    probe = "interception_send raised %r" % (exc,)
-                self._reason = ("the driver answered but reports no mouse "
-                                "device (is the mouse connected through a "
-                                "driver the filter does not see? probe: "
-                                "%s)" % probe)
-                log("Input: Interception found no mouse device. Probe: %s. "
-                    "If the probe says it returned 0, the loaded DLL is "
-                    "not really talking to the kernel driver - replace it "
-                    "with interception.dll from the official v1.0.1 "
-                    "archive (library/ folder). Using Windows injection."
-                    % probe)
-                self._degraded = True
+            import ctypes as _c
+            self._k32 = _c.windll.kernel32
+        except Exception as exc:
+            self._reason = "kernel32 unavailable (%r)" % (exc,)
+            self._degraded = True
+            return
+        try:
+            dev = _call_with_timeout(self._open_devices, 8.0)
         except _Timeout as exc:
-            # v8.61: real timeouts now raise instead of returning None,
-            # so this branch can only mean a call genuinely hung - never
-            # a legitimate "nothing found" answer that used to be
-            # mislabelled "driver installed but wedged".
+            self._close_all()
+            self._reason = "driver handshake %s" % (exc,)
             log("Input: Interception init timed out (%s); using Windows "
                 "injection instead." % (exc,))
-            self._reason = str(exc)
             self._degraded = True
+            return
         except Exception as exc:
+            self._close_all()
+            self._reason = repr(exc)
             log("Input: Interception init failed (%r); using Windows "
                 "injection instead." % (exc,))
-            self._reason = repr(exc)
             self._degraded = True
-
-    # -- discovery ----------------------------------------------------
-    @staticmethod
-    def _candidate_dirs():
-        dirs = []
-        try:
-            if getattr(sys, "frozen", False):
-                # v8.50 fix: the exe's OWN folder first. Windows' LoadLibrary
-                # does not reliably search it (CWD / System32 / PATH only), so
-                # an interception.dll sitting next to Snappy AI.exe was being
-                # reported as "missing" while the driver was installed fine.
-                dirs.append(os.path.dirname(sys.executable))
-                # PyInstaller onefile unpacks modules into _MEIPASS; a DLL
-                # bundled there is equally valid.
-                meipass = getattr(sys, "_MEIPASS", None)
-                if meipass:
-                    dirs.append(meipass)
-            dirs.append(os.path.dirname(os.path.abspath(__file__)))
-        except Exception:
-            pass
-        dirs.append("")            # then the normal PATH search
-        return dirs
-
-    # Legacy ABI-1 exports every genuine interception.dll must carry
-    # (v1.0.1 official release included). ABI-10 helpers such as
-    # first_target_device/receive/iterate are NOT required and are
-    # absent from official release DLLs.
-    _REQUIRED_EXPORTS = ("interception_create_context",
-                         "interception_destroy_context",
-                         "interception_wait_with_timeout",
-                         "interception_send")
-
-    @staticmethod
-    def _has_exports(dll):
-        # getattr on a ctypes WinDLL raises AttributeError for missing
-        # exports, so hasattr answers per name without touching the
-        # driver. Plain-name hits win; otherwise fall back to reading
-        # the PE export table once (decorated MSVC builds).
-        plain = getattr(dll, "_plain_exports", None)
-        if plain is not None:
-            return all(n in plain for n in
-                       InterceptionBackend._REQUIRED_EXPORTS)
-        # v8.57: ctypes' own lookup FIRST. The official v1.0.1 DLL
-        # exports plain dllexport'd C names, so this hits on any genuine
-        # library and we never touch the loader APIs at all.
-        if all(hasattr(dll, n) for n in
-               InterceptionBackend._REQUIRED_EXPORTS):
-            return True
-        # Only nonstandard (decorated) rebuilds fall through to the
-        # direct GetProcAddress probe. No PE-table scan anywhere: that
-        # path loaded contract DLLs via forwarded-export resolution and
-        # silently killed the process (v8.56 regression). A DLL that
-        # fails both checks is simply not Interception - keep searching.
-        return InterceptionBackend._abi1_names(dll)
-
-    @staticmethod
-    def _abi1_names(dll):
-        # v8.54: THE ACTUAL FACTS ABOUT THE OFFICIAL DLL. The
-        # interception.dll shipped in oblitum/Interception release v1.0.1
-        # is compiled C using __declspec(dllexport) - its export table
-        # contains PLAIN, UNDECORATED names ("interception_send", no "@N"
-        # suffix, no C++ mangling). Earlier revisions of this loader were
-        # built on the opposite assumption and that is why every attempt
-        # still failed on the user's machine:
-        #   v8.52 assumed C++-mangled names (?interception_send@@YA...)
-        #   v8.53 assumed stdcall-decorated names (interception_send@16)
-        # Neither exists in the real file. What DID exist in v8.53 and
-        # stays here: calling kernel32.GetProcAddress through ctypes with
-        # an explicit c_char_p (immune to the loader-hook problem). We
-        # probe plain names FIRST (they hit on the official DLL), then
-        # decorated sizes for hand-built stdcall variants. There is NO
-        # PE-export-table fallback any more - see the v8.58 note below;
-        # if this probe cannot find the names, the file is not a usable
-        # Interception library and _load_dll keeps searching.
-        try:
-            k32 = ctypes.windll.kernel32
-            k32.GetProcAddress.restype = ctypes.c_void_p
-            k32.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-            # v8.58: this fallback must NEVER load another module. The
-            # old code called LoadLibraryExW(LOAD_LIBRARY_AS_DATAFILE)
-            # via _module_handle() when the DLL arrived through a
-            # redirected/PATH search - forwarding to api-ms-win-crt-*
-            # contract stubs and destabilising the process (the silent-
-            # death family of bugs). If we do not already know the real
-            # image base from our own explicit-path load, we simply give
-            # up on decorated-name probing; the plain ctypes lookup in
-            # _has_exports() already covers every genuine DLL.
-            base = getattr(dll, "_snappy_module", 0) or 0
-            if not base:
-                return False
-            found = {}
-            for n in InterceptionBackend._REQUIRED_EXPORTS:
-                nb = n.encode("ascii")
-                # Plain name first: correct for the official dllexport'd
-                # C build. Then stdcall decorations, for nonstandard
-                # rebuilds that used the MSVC /Gz default naming.
-                for cand in ([nb] +
-                             [b"%s@%d" % (nb, sz)
-                              for sz in (4, 8, 12, 16, 20, 24)]):
-                    try:
-                        addr = k32.GetProcAddress(base, cand)
-                    except Exception:
-                        addr = None
-                    if addr:
-                        found[n] = int(addr)
-                        break
-            if not all(n in found for n in
-                       InterceptionBackend._REQUIRED_EXPORTS):
-                # v8.57/58: NO PE-export-table fallback - it loaded
-                # api-ms-win-crt-* contract modules mid-startup via
-                # forwarded-export resolution and silently killed the
-                # process. If the GetProcAddress probe cannot find the
-                # four required names, this file is not a usable
-                # Interception library; _load_dll keeps searching.
-                return False
-            dll._plain_exports = found       # plain name -> abs address
-            dll._plain_image_base = base     # module load address
-            return True
-        except Exception:
-            return False
-
-    # v8.58: the PE-export-table scanner of v8.56 is DELETED, not just
-    # disabled. It resolved forwarded exports by calling WinDLL() on the
-    # forward-target name found at an RVA inside our own file read - for
-    # MSVC-built DLLs that name is an api-ms-win-crt-* contract stub,
-    # and Windows' API-set shim loads the real runtime DLL into the
-    # process mid-startup. That loader interference is what made Snappy
-    # AI sit in the process list with no window whenever
-    # interception.dll was present. Nothing here may ever load a module
-    # other than the one the user pointed us at; ctypes' plain lookup
-    # plus a GetProcAddress probe on OUR OWN handle cover every genuine
-    # build between them.
-
-    @staticmethod
-    def _install_plain_lookup(dll):
-        # Bind the plain names our scan resolved but ctypes' own lookup
-        # could not find (decorated-only builds). The scan knows exact
-        # addresses; we cast them to stdcall callables and setattr()
-        # them on the DLL object - ctypes WinDLL returns instance
-        # attributes before dynamic lookup, so everything downstream
-        # (.argtypes/.restype, byref(), Structure pointers) behaves
-        # like a normally-loaded DLL.
-        # v8.56: RVA-vs-absolute bookkeeping is explicit now. The
-        # file-based scan records RVAs (offset them by the handle we
-        # really loaded via LoadLibraryEx - never ctypes' private
-        # `_handle`, which is NOT an HMODULE); GetProcAddress-probe and
-        # forwarded-export entries are already absolute and trusted.
-        # Forwarded exports resolve through the target DLL instead.
-        plain = getattr(dll, "_plain_exports", None)
-        if not plain:
             return
-        try:
-            rvas = bool(getattr(dll, "_plain_rvas", False))
-            module = getattr(dll, "_snappy_module", 0) or 0
-            for short, va in list(plain.items()):
-                if hasattr(dll, short):
-                    continue      # plain GetProcAddress already works
-                if not va:
-                    continue
-                if rvas:
-                    if not module:
-                        continue          # cannot offset - refuse to bind
-                    addr = module + int(va)   # RVA -> absolute
-                else:
-                    addr = int(va)            # absolute, probe-resolved
-                f = ctypes.cast(addr, ctypes.WINFUNCTYPE(ctypes.c_void_p))
-                setattr(dll, short, f)
-        except Exception:
-            pass
+        if dev is None:
+            self._close_all()
+            if not self._reason:
+                self._reason = ("no mouse device answered (is the mouse "
+                                "plugged in? install: interception.exe "
+                                "install, reboot)")
+            log("Input: Interception found no mouse device (%s). Using "
+                "Windows injection." % (self._reason,))
+            self._degraded = True
+            return
+        self._dev = dev
+        self._handle = self._handles[dev][0]
 
-    @staticmethod
-    def _module_handle(path):
-        """True HMODULE for an already-loaded DLL.
+    def _open_devices(self):
+        """Open all 20 control slots + sync events; return the first
+        mouse slot (10..19) whose hardware ID reads back, else None.
 
-        LoadLibraryExW with LOAD_LIBRARY_AS_DATAFILE (0x2) maps the file
-        as data only - it never runs DllMain and never blocks on a wedged
-        driver - but its return value is still based on the image's load
-        address, so `handle & ~0x3` recovers the same base the normal
-        WinDLL load used. This is the officially sanctioned idiom for
-        reading a loaded module's headers; ctypes' private `_handle` is
-        NOT an HMODULE and must never be used for this."""
-        if not IS_WINDOWS:
-            return 0
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.LoadLibraryExW.restype = ctypes.c_void_p
-        k32.LoadLibraryExW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p,
-                                       ctypes.c_uint]
-        h = k32.LoadLibraryExW(os.path.abspath(path), None, 0x2)
-        if not h:
-            return 0
-        try:
-            k32.FreeLibrary(ctypes.c_void_p(h))   # drop the data mapping
-        except Exception:
-            pass
-        return int(h) & ~0x3
-
-    @staticmethod
-    def _file_frozen(path):
-        """True when another process holds an exclusive handle on the
-        file - the classic signature of antivirus mid-scan (or a
-        quarantined stub). Windows returns ERROR_SHARING_VIOLATION; we
-        deliberately do NOT treat ACCESS_DENIED as frozen, since that is
-        normal NTFS ACL behaviour for files the user may still load.
-
-        v8.58: checked BEFORE LoadLibrary, because WinDLL() on a
-        scan-frozen file blocks inside the loader until the AV releases
-        it - unbounded, on whichever thread called us."""
-        try:
-            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            k32.CreateFileW.restype = ctypes.c_void_p
-            k32.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint,
-                                        ctypes.c_uint, ctypes.c_void_p,
-                                        ctypes.c_uint, ctypes.c_uint,
-                                        ctypes.c_void_p]
-            INVALID = ctypes.c_void_p(-1).value
-            # GENERIC_READ(0) + FILE_SHARE_ALL + OPEN_EXISTING: pure
-            # existence-of-handle probe, never reads or locks anything.
-            h = k32.CreateFileW(os.path.abspath(path), 0, 7, None, 1, 0x80,
-                                None)
-            if h == INVALID or h is None:
-                err = ctypes.get_last_error()
-                return err == 32          # ERROR_SHARING_VIOLATION
-            k32.CloseHandle(ctypes.c_void_p(h))
-            return False
-        except Exception:
-            return False                  # probe failed -> assume fine
-
-    @classmethod
-    def _load_dll(cls):
-        """Returns (dll_or_None, froze_flag). Called only through
-        _call_with_timeout: even if this hangs inside WinDLL()/DllMain
-        (wedged kernel driver answering device enumeration at load
-        time), the caller gives up after its timeout and the GUI keeps
-        running on Win32."""
-        loaded_path = None
-        for d in cls._candidate_dirs():
-            p = os.path.join(d, "interception.dll") if d else \
-                "interception.dll"
+        A slot that will not open, sync, or identify is skipped, never
+        fatal: one wedged slot must not veto a healthy driver. Every
+        slot that is not chosen is closed again - parked handles would
+        only leak, this backend never receives.
+        """
+        self._handles = [None] * self._MOUSE_SLOTS
+        for num in range(self._MOUSE_SLOTS):
             try:
-                if d and not os.path.isfile(p):
-                    continue
-                if d and cls._file_frozen(p):
-                    # Do not attempt the load: it would park a thread
-                    # inside the AV-suspended loader for who-knows-how
-                    # long. Report honestly instead.
-                    cls._loaded_path = p
-                    return None, True
-                dll = ctypes.WinDLL(p)
-                loaded_path = p if d else "(PATH search)"
-            except OSError:
-                continue
-            # v8.58: the image base is recorded ONLY for explicit-path
-            # loads (d is truthy). For the PATH-search fallback we pass
-            # 0, which makes _abi1_names() a no-op - deliberately: the
-            # LoadLibraryExW probe it used could resolve api-set
-            # forwards and load contract DLLs mid-startup, the exact
-            # class of loader interference behind the silent-death
-            # reports. The plain ctypes lookup in _has_exports() needs
-            # no module handle at all and covers genuine DLLs.
-            try:
-                dll._snappy_module = (cls._module_handle(p) if d else 0)
+                h = self._k32.CreateFileA(
+                    ("\\\\.\\interception%02d" % num).encode(),
+                    self._GENERIC_READ, 0, None,
+                    self._OPEN_EXISTING, 0, None)
             except Exception:
-                dll._snappy_module = 0
-            dll._snappy_path = os.path.abspath(p) if d else None
-            # A DLL that lacks the real Interception exports is NOT the
-            # Interception library - keep searching (a stale copy can sit
-            # on PATH/System32 ahead of the good one next to the exe).
-            # v8.51 fix: probe LEGACY ABI-1 names only. The official
-            # interception.dll from release v1.0.1 exports nothing else;
-            # probing first_target_device (an ABI-10 helper) rejected
-            # perfectly good official DLLs and every user saw "selected
-            # but not working" even with the driver installed.
-            # v8.54 correction: the official DLL's exports are PLAIN,
-            # UNDECORATED C names (dllexport'd __stdcall functions - no
-            # "@N", no "?...@@YA"). _has_exports() finds them through
-            # ctypes' normal WinDLL lookup; _abi1_names() (direct
-            # GetProcAddress probe + PE-table scan) remains as the
-            # hook-proof fallback for decorated builds and redirected
-            # loads.
-            if cls._has_exports(dll) or cls._abi1_names(dll):
-                cls._install_plain_lookup(dll)
-                cls._loaded_path = p if d else "(PATH search)"
-                return dll, False
-        cls._loaded_path = loaded_path
-        return None, False
+                continue
+            if h is None or h == -1:
+                continue
+            try:
+                ev = self._k32.CreateEventA(None, 1, 0, None)
+            except Exception:
+                ev = None
+            if not ev:
+                try:
+                    self._k32.CloseHandle(h)
+                except Exception:
+                    pass
+                continue
+            self._handles[num] = (h, ev)
+        for num in range(self._MOUSE_FIRST, self._MOUSE_SLOTS):
+            slot = self._handles[num]
+            if slot is None:
+                continue
+            if not self._set_event(*slot):
+                continue
+            if self._hwid(num) is None:
+                continue
+            for i, other in enumerate(self._handles):
+                if i != num and other is not None:
+                    self._close_slot(*other)
+                    self._handles[i] = None
+            return num
+        return None
 
-    @classmethod
-    def _load_dll_probe(cls):
-        """Timeout-safe wrapper around _load_dll for callers that must
-        never block (the GUI thread). Returns (dll_or_None, frozen);
-        (None, True) also means 'the load call itself hung'. v8.61:
-        timeouts now raise _Timeout instead of returning None, so the
-        two cases are told apart properly."""
-        if not IS_WINDOWS:
-            return None, False
+    def _set_event(self, h, ev):
+        """Sync-event handshake, as oblitum's create_context does."""
+        import ctypes as _c
+        buf = (_c.c_void_p * 2)(ev, 0)
+        done = (_c.c_uint32 * 1)(0)
         try:
-            return _call_with_timeout(cls._load_dll, 8.0)
-        except _Timeout:
-            cls._loaded_path = getattr(cls, "_loaded_path", None)
-            return None, True          # hung inside loader/DllMain
+            ok = self._k32.DeviceIoControl(
+                h, self._IOCTL_SET_EVENT, buf, 16, None, 0, done, None)
+        except Exception:
+            return False
+        return bool(ok)
+
+    def _hwid(self, num):
+        """Hardware ID string of slot `num`, or None when unreadable."""
+        import ctypes as _c
+        slot = self._handles[num]
+        if slot is None:
+            return None
+        buf = (_c.c_byte * 500)()
+        done = (_c.c_uint32 * 1)(0)
+        try:
+            ok = self._k32.DeviceIoControl(
+                slot[0], self._IOCTL_GET_HWID,
+                None, 0, buf, 500, done, None)
+        except Exception:
+            return None
+        if not ok or not done[0]:
+            return None
+        try:
+            return bytes(buf[:done[0]]).decode("utf-16")
+        except Exception:
+            return None
+
+    def _close_slot(self, h, ev):
+        for handle in (h, ev):
+            try:
+                if handle:
+                    self._k32.CloseHandle(handle)
+            except Exception:
+                pass
+
+    def _close_all(self):
+        for slot in (self._handles or []):
+            if slot is not None:
+                try:
+                    self._close_slot(*slot)
+                except Exception:
+                    pass
+        self._handles = []
+        self._handle = None
+
+    def close(self):
+        self._close_all()
+        if self._accel_disabled:
+            try:
+                import win32rt
+                win32rt.user32.SystemParametersInfoA(
+                    0x0071, 0, ctypes.c_int(self._prev_accel), 2)
+            except Exception:
+                pass
+            self._accel_disabled = False
 
     @classmethod
     def available(cls):
-        """Cheap check for the GUI: DLL present AND driver devices alive.
+        """Cheap check for the GUI: any mouse control slot opens.
 
-        Safe off Windows and without the library: returns False, never
-        raises. Result is cached after the first probe. v8.58: every
-        kernel-facing step runs behind _call_with_timeout - this is
-        called from a worker thread in gui.py but must still be unable
-        to park anything forever."""
+        Safe off Windows; never raises. Results expire after 30 s so
+        installing the driver while the app runs takes effect without
+        a relaunch. Runs on the GUI's worker thread; a wedged driver
+        can only park that daemon thread, bounded by the timeout.
+        """
         if not IS_WINDOWS:
             return False
-        # v8.67: the old cache was permanent - installing the driver
-        # while the app ran never took effect until restart. Probe
-        # results now expire after 30 s so a "Re-check" or the settings
-        # dropdown picks up an install/uninstall without relaunching.
         _now = time.monotonic()
         cached = getattr(cls, "_avail_cache", None)
         cached_at = getattr(cls, "_avail_cache_at", 0.0)
         if cached is not None and (_now - cached_at) < 30.0:
             return cached
-        ok = False
         try:
-            dll, frozen = cls._load_dll_probe()
-            if dll is not None and not frozen:
-                dll.interception_create_context.restype = ctypes.c_void_p
-                try:
-                    ctx = _call_with_timeout(
-                        dll.interception_create_context, 6.0)
-                except _Timeout:
-                    ctx = None
-                if ctx:
-                    dll.interception_destroy_context.argtypes = \
-                        [ctypes.c_void_p]
-                    # Driver liveness WITHOUT requiring any device input:
-                    # the official ABI-1 idiom is asking is_mouse() for
-                    # the fixed handles 1..10 - it answers from the
-                    # driver's installed-device table, so an idle mouse
-                    # on a cold boot still counts as alive. (The old
-                    # wait_with_timeout probe blocked until real mouse
-                    # traffic arrived and then reported the healthy
-                    # driver as dead.)
-                    if hasattr(dll, "interception_is_mouse"):
-                        dll.interception_is_mouse.restype = ctypes.c_int
-                        dll.interception_is_mouse.argtypes = [ctypes.c_int]
-
-                        def _walk():
-                            for dev in range(1,
-                                             cls._INTERCEPTION_MAX_DEVICES
-                                             + 1):
-                                try:
-                                    if dll.interception_is_mouse(dev):
-                                        return True
-                                except Exception:
-                                    continue
-                            return False
-
-                        try:
-                            ok = bool(_call_with_timeout(_walk, 6.0))
-                        except _Timeout:
-                            ok = False
-                    else:
-                        dll.interception_wait_with_timeout.restype = \
-                            ctypes.c_int
-                        dll.interception_wait_with_timeout.argtypes = \
-                            [ctypes.c_void_p, ctypes.c_double]
-                        try:
-                            dll.interception_wait_with_timeout(ctx, 0.15)
-                            ok = True
-                        except Exception:
-                            ok = False
-                    dll.interception_destroy_context(ctx)
+            ok = bool(_call_with_timeout(cls._probe_slots, 8.0))
+        except _Timeout:
+            ok = False
         except Exception:
             ok = False
         cls._avail_cache = ok
         cls._avail_cache_at = time.monotonic()
         return ok
 
-    def _build_signatures(self):
-        c = ctypes
-
-        class MOUSE(c.Structure):
-            _fields_ = [("type", c.c_ushort),
-                        ("reserved", c.c_ushort),
-                        ("x", c.c_int), ("y", c.c_int),
-                        ("normalized_position", c.c_uint),
-                        ("rolling_to_x", c.c_int),
-                        ("rolling_to_y", c.c_int),
-                        ("buttons", c.c_ushort),
-                        ("movement", c.c_short),
-                        ("speed", c.c_long)]
-
-        class STROKE(c.Union):
-            _fields_ = [("mouse", MOUSE),
-                        ("pad", c.c_byte * 60)]
-
-        self._STROKE = STROKE
-        dll = self._dll
-        # v8.50: declare EVERY entry point used below, with restypes as
-        # well as argtypes. Without a restype, ctypes assumes int and
-        # truncates the 64-bit context handle on the first call - the
-        # driver then receives garbage and Interception dies at startup.
-        dll.interception_create_context.restype = c.c_void_p
-        dll.interception_destroy_context.argtypes = [c.c_void_p]
-        # first_target_device exists only on ABI-10 builds (NOT the
-        # official v1.0.1 release DLL). Declare it when present so
-        # _find_mouse can try it as a fast path; absence is fine.
-        if hasattr(dll, "interception_first_target_device"):
-            dll.interception_first_target_device.restype = c.c_int
-            dll.interception_first_target_device.argtypes = [c.c_void_p,
-                                                             c.c_int]
-        # v8.52: legacy ABI-1 fallbacks. The official v1.0.1 DLL has no
-        # next_handle at all - device iteration there is just walking
-        # the fixed handles 1..10 and asking is_keyboard/is_mouse. Only
-        # declare what this build actually exports.
-        if hasattr(dll, "interception_first_device"):
-            dll.interception_first_device.restype = c.c_int
-            dll.interception_first_device.argtypes = [c.c_int]
-        if hasattr(dll, "interception_next_handle"):
-            dll.interception_next_handle.restype = c.c_int
-            dll.interception_next_handle.argtypes = [c.c_void_p, c.c_int]
-        if hasattr(dll, "interception_is_mouse"):
-            dll.interception_is_mouse.restype = c.c_int
-            dll.interception_is_mouse.argtypes = [c.c_int]
-        dll.interception_wait_with_timeout.restype = c.c_int
-        dll.interception_wait_with_timeout.argtypes = [c.c_void_p,
-                                                       c.c_double]
-        dll.interception_wait.argtypes = [c.c_void_p, c.c_int,
-                                          ctypes.POINTER(STROKE)]
-        dll.interception_send.restype = c.c_int
-        dll.interception_send.argtypes = [c.c_void_p, c.c_int,
-                                          ctypes.POINTER(STROKE), c.c_int]
-        if hasattr(dll, "interception_set_filter"):
-            dll.interception_set_filter.argtypes = [c.c_void_p, c.c_int,
-                                                    c.c_ushort]
-
-    def _query_table(self):
-        """v8.62 THE REAL BUG: we walked handles 1..10, but Interception
-        splits them in two ranges - 1..10 are HARDWARE (observer)
-        devices and 11..20 are SOFTWARE (target) devices. Every working
-        example shipped with the library (mx.c, send.c) iterates
-        INTERCEPTION_MAX_MOUSE = 20 and sends through the handle where
-        is_mouse() is TRUE IN THE 11..20 RANGE. Our old 1..10-only walk
-        therefore reported 'the driver lists no mouse' on perfectly
-        healthy installs: the kernel driver DID list the mouse, just at
-        handle 11+, above our blind window. That is exactly this user's
-        symptom ('driver answered, table lists no mouse', probe send to
-        handle 1 returning 1). Query both ranges."""
-        found = []                  # [(dev, is_mouse_bool), ...]
-        if not hasattr(self._dll, "interception_is_mouse"):
-            return found
-        is_mouse = self._dll.interception_is_mouse
-        is_mouse.argtypes = [ctypes.c_int]
-        is_mouse.restype = ctypes.c_int
-        for dev in range(1, self._INTERCEPTION_MAX_DEVICES + 1):
+    @staticmethod
+    def _probe_slots():
+        import ctypes as _c
+        try:
+            k32 = _c.windll.kernel32
+        except Exception:
+            return False
+        for num in range(10, 20):
             try:
-                found.append((dev, bool(is_mouse(dev))))
+                h = k32.CreateFileA(
+                    ("\\\\.\\interception%02d" % num).encode(),
+                    0x80000000, 0, None, 3, 0, None)
             except Exception:
                 continue
-        return found
+            if h is not None and h != -1:
+                try:
+                    k32.CloseHandle(h)
+                except Exception:
+                    pass
+                return True
+        return False
 
-    def _find_mouse(self):
-        # v8.60: EVERY branch of discovery is tried on EVERY build.
-        # v8.59 gated the static-range walk behind
-        # "has is_mouse AND NOT has next_handle", which assumed ABI-1
-        # and ABI-10 builds are mutually exclusive - they are not. A
-        # DLL that exports BOTH helper sets skipped the walk entirely,
-        # fell into the ABI-10 iteration path, and when that returned
-        # nothing died with "found no mouse target device" even though
-        # the plain 1..10 walk would have answered instantly. The
-        # ordering insight from v8.59 stands: NEVER open with a
-        # blocking wait (ABI-1's first wait attaches the filter to
-        # every device and blocks until real traffic arrives); wake-up
-        # happens only as a bounded fallback in __init__.
-        table = self._query_table()
-        # v8.62: prefer the SOFTWARE (target) half of the range, 11..20 -
-        # that is the handle official examples send strokes through.
-        for dev, kind in table:
-            if kind and dev > self._INTERCEPTION_HARDWARE_DEVICES:
-                try:
-                    self._dll.interception_set_filter(
-                        self._context, dev, self._FILTER_ALL)
-                except Exception:
-                    pass
-                return dev
-        # Fall back to a hardware (observer) handle only if the software
-        # half listed nothing - sending there still works on some
-        # setups, and beats degrading outright.
-        for dev, kind in table:
-            if kind:
-                try:
-                    self._dll.interception_set_filter(
-                        self._context, dev, self._FILTER_ALL)
-                except Exception:
-                    pass
-                return dev
-        for kind in (15, 14):     # MOUSE then MOUSE_ABSOLUTE
-            # first_target_device is an ABI-10 helper; the official
-            # v1.0.1 release DLL does not export it. Skip the fast path
-            # when absent - the static-range walk below is the legacy
-            # idiom and always works.
-            if getattr(self._dll, "interception_first_target_device",
-                       None) is None:
-                break
-            try:
-                self._dll.interception_first_target_device.argtypes = \
-                    [ctypes.c_void_p, ctypes.c_int]
-                self._dll.interception_first_target_device.restype = \
-                    ctypes.c_int
-                dev = self._dll.interception_first_target_device(
-                    self._context, kind)
-            except Exception:
-                break
-            if dev > 0:
-                try:
-                    self._dll.interception_set_filter(
-                        self._context, dev, self._FILTER_ALL)
-                except Exception:
-                    pass
-                return dev
-        if hasattr(self._dll, "interception_next_handle") and \
-                hasattr(self._dll, "interception_first_device") and \
-                hasattr(self._dll, "interception_is_mouse"):
-            # ABI-10 iteration idiom. Wrapped defensively: on any build
-            # where these helpers misbehave we still land on the legacy
-            # fixed-range walk below instead of degrading to Win32.
-            try:
-                for kind in (15, 14):
-                    dev = self._dll.interception_next_handle(
-                        self._context,
-                        self._dll.interception_first_device(kind))
-                    while 0 < dev <= self._INTERCEPTION_MAX_DEVICES:
-                        if self._dll.interception_is_mouse(dev):
-                            try:
-                                self._dll.interception_set_filter(
-                                    self._context, dev, self._FILTER_ALL)
-                            except Exception:
-                                pass
-                            return dev
-                        dev = self._dll.interception_next_handle(
-                            self._context, dev)
-            except Exception:
-                pass
-        # v8.60: the static-range walk at the TOP of this function already
-        # covered every build that exports is_mouse(); there is nothing
-        # left to re-walk here. Reaching this point means BOTH the table
-        # walk and the ABI-10 iteration came up empty on a DLL whose
-        # create_context just succeeded - so the driver IS answering but
-        # genuinely reports no mouse through this context. The old tail
-        # duplicate of the walk (gated on "no next_handle") could never
-        # fire after the top walk ran: same inputs, same result.
-        log("Input: Interception found no mouse target device - the "
-            "driver answered but its device table lists no mouse. "
-            "Reinstall it ('interception.exe install' from an admin "
-            "prompt), reboot, and make sure the mouse is plugged in "
-            "before Snappy AI starts. Using Windows injection.")
-        return None
+    @classmethod
+    def _pack(cls, flags, btn, data, x, y):
+        import struct as _struct
+        return _struct.pack(cls._STROKE_FMT, 0, flags, btn, data, 0,
+                            int(x), int(y), 0)
 
-    # -- contract ------------------------------------------------------
+    def _move_stroke(self, dx, dy):
+        """One relative-motion stroke (flags=0, no buttons)."""
+        return self._pack(self._MOUSE_MOVE_RELATIVE, 0, 0, dx, dy)
+
+    def _button_stroke(self, down):
+        """One button stroke (flags=ABSOLUTE, x=y=0), exactly what
+        interception-python's mouse_down/mouse_up pack - the layout
+        Unibot proves against this exact driver."""
+        return self._pack(self._MOUSE_MOVE_ABSOLUTE,
+                          self._MOUSE_LEFT_DOWN if down
+                          else self._MOUSE_LEFT_UP,
+                          0, 0, 0)
+
+    def _write(self, payload):
+        """One ioctl carrying len(payload)/24 strokes. Returns strokes
+        written, or -1 on transport failure."""
+        import ctypes as _c
+        buf = (_c.c_ubyte * len(payload))(*payload)
+        done = (_c.c_uint32 * 1)(0)
+        try:
+            ok = self._k32.DeviceIoControl(
+                self._handle, self._IOCTL_WRITE,
+                buf, len(payload), None, 0, done, None)
+        except Exception:
+            return -1
+        if not ok:
+            return -1
+        return done[0] // self._STROKE_LEN
+
+
     def ok_for_button(self):
         return (not self._degraded) and self._dev is not None
 
@@ -850,9 +480,9 @@ class InterceptionBackend(object):
             log("Input: Interception %s failed; falling back to Windows "
                 "injection for the rest of this session." % (where,))
 
-    # Longest distance we will travel as relative strokes. Beyond this
-    # a warp is faster and cannot undershoot; games that track raw motion
-    # still see the button stroke's motion bits land on the real cursor.
+
+
+
     _STEP = 128
     _MAX_STROKE_TRAVEL = 400
 
@@ -872,8 +502,9 @@ class InterceptionBackend(object):
         try:
             cx, cy = win32rt.get_cursor_pos()
         except Exception:
-            self.note_failure("cursor read")
-            win32rt.user32.SetCursorPos(tx, ty)   # best effort
+            # Transient failure: fall back without degrading
+            win32rt.user32.SetCursorPos(tx, ty)
+            win32rt.user32.SetCursorPos(tx, ty)
             return
         if (cx, cy) == (tx, ty):
             return
@@ -884,11 +515,11 @@ class InterceptionBackend(object):
         for _ in range(4):
             dx = max(-self._STEP, min(self._STEP, tx - cx))
             dy = max(-self._STEP, min(self._STEP, ty - cy))
-            # x2y-style coalescing debt: if the driver merged our last
-            # stroke with physical mouse motion, the cursor travelled
-            # FURTHER than requested. Repay that overshoot by shrinking
-            # (or zeroing) this stroke instead of adding to it. The debt
-            # is always opposite in sign to the requested direction.
+
+
+
+
+
             sh = self._shift
             if sh > 0 and dx < 0:
                 take = min(sh, -dx)
@@ -896,12 +527,10 @@ class InterceptionBackend(object):
             elif sh < 0 and dx > 0:
                 take = min(-sh, dx)
                 dx -= take; self._shift += take
-            s = self._STROKE()
-            s.mouse.type = self._IS_MOUSE_MOVE
-            s.mouse.x, s.mouse.y = dx, dy
+            s = self._move_stroke(dx, dy)
             self._send(s, "move")
             if self._degraded:
-                win32rt.user32.SetCursorPos(tx, ty)  # finish the trip
+                win32rt.user32.SetCursorPos(tx, ty)
                 return
             time.sleep(0.001)
             try:
@@ -909,8 +538,8 @@ class InterceptionBackend(object):
             except Exception:
                 self.note_failure("cursor read")
                 return
-            # detect coalescing on the axis we actually stroked: actual
-            # travel exceeded requested travel in the same direction
+
+
             if dx:
                 real_dx = nx - cx
                 if (real_dx > 0) == (dx > 0) and abs(real_dx) > abs(dx):
@@ -919,26 +548,91 @@ class InterceptionBackend(object):
             if (cx, cy) == (tx, ty):
                 break
         else:
-            # Corrector never converged (acceleration fighting the
-            # strokes): do not leave the click short - warp home.
+
+
             try:
                 if win32rt.get_cursor_pos() != (tx, ty):
                     win32rt.user32.SetCursorPos(tx, ty)
             except Exception:
                 pass
 
-    def button(self, down):
-        # interception.h: a stroke that changes button state must ALSO
-        # carry the motion bits, or the driver drops it silently -
-        # without IS_MOUSE_MOVE every click through this backend vanishes.
-        s = self._STROKE()
-        s.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
-        s.mouse.x, s.mouse.y = 0, 0
-        s.mouse.buttons = 1 if down else 0
-        self._send(s, "button")
+    def nudge(self, dx, dy):
+        """One relative motion step as a single move-only stroke.
+
+        Fire-and-forget on purpose: per-frame aim steering must never
+        do the settle-and-correct cursor loop that move() does (three
+        cursor reads per step would triple the cost of every steering
+        frame and fight the game's own pointer management). A dropped
+        step simply retries next frame; _send() degrades honestly.
+        """
+        dx, dy = int(round(dx)), int(round(dy))
+        if not dx and not dy:
+            return True
+        if not self._accel_disabled:
+            prev = _set_mouse_accel(False)
+            if prev is not None:
+                self._prev_accel = prev
+                self._accel_disabled = True
+        try:
+            return self._send(self._move_stroke(dx, dy), "nudge")
+        finally:
+            if self._accel_disabled and self._prev_accel is not None:
+                _set_mouse_accel(self._prev_accel)
+                self._accel_disabled = False
+                self._prev_accel = None
+
+    def __del__(self):
+        if self._accel_disabled and self._prev_accel is not None:
+            try:
+                _set_mouse_accel(self._prev_accel)
+            except Exception:
+                pass
+
+    def _expect_now(self, kind):
+        """Ledger one synthetic button event at the live cursor.
+
+        Called BEFORE the stroke goes out; the hook consumes it on
+        arrival instead of mistaking it for the user's hand. Cursor
+        read failure degrades to position-agnostic (kind + fresh).
+        Never raises into the send path.
+        """
+        try:
+            import win32rt
+            cx, cy = win32rt.get_cursor_pos()
+        except Exception:
+            cx = cy = None
+        try:
+            self._expected.expect(kind, cx, cy)
+        except Exception:
+            pass
+
+    def consume_expected(self, wparam, x, y):
+        """True when this hook event is our own synthetic output.
+
+        wparam is the raw mouse message; only LEFT transitions are
+        ever ledgered (every other button passes through untouched).
+        Unknown backends/ doubles answer False via getattr.
+        """
+        try:
+            if wparam == 0x0201:
+                kind = "down"
+            elif wparam == 0x0202:
+                kind = "up"
+            else:
+                return False
+            return bool(self._expected.consume(kind, x, y))
+        except Exception:
+            return False
+
+    def button(self, down, index=0):
+        if index:
+            note_mouse_role("Driver input", index)
+            return False
+        self._expect_now("down" if down else "up")
+        self._send(self._button_stroke(down), "button")
         return self.ok_for_button()
 
-    def send_click(self):
+    def send_click(self, index=0):
         """One complete synthetic click as a SINGLE two-stroke packet
         (down+up delivered in one interception_send transaction), with a
         randomized hold between the transitions. Borrowed from connorabs'
@@ -952,67 +646,829 @@ class InterceptionBackend(object):
         exactly what assist._click does on False, so a mid-call failure
         can never leave the logical button stuck)."""
         import random
+        if index:
+            note_mouse_role("Driver input", index)
+            return False
         if not self.ok_for_button():
             return False
-        d = self._STROKE()
-        d.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
-        d.mouse.buttons = 1
-        u = self._STROKE()
-        u.mouse.type = self._IS_MOUSE_MOVE | self._IS_MOUSE_LEFT
-        u.mouse.buttons = 0
-        pair = (self._STROKE * 2)(d, u)
-        ok = self._send_count(pair, 2, "click")
-        # human-ish visible hold so apps that poll button state register it
+        d = self._button_stroke(True)
+        u = self._button_stroke(False)
+        self._expect_now("down")
+        self._expect_now("up")
+        ok = self._send_count(d + u, 2, "click")
+
         time.sleep(random.uniform(0.015, 0.035))
         return ok
 
-    # -- internals ------------------------------------------------------
-    def _send_count(self, strokes, count, what):
-        """Send `count` strokes in ONE interception_send transaction,
-        under the same lock _send uses."""
+
+    def _send_count(self, payload, count, what):
+        """Send `count` strokes in ONE ioctl transaction, under the
+        same lock _send uses (the atomic tap pair relies on this)."""
         with self._lock:
-            if self._degraded or self._dev is None:
+            if self._degraded or self._handle is None:
                 return False
-            try:
-                sent = self._dll.interception_send(
-                    self._context, self._dev,
-                    ctypes.cast(strokes, ctypes.c_void_p), count)
-            except Exception:
+            if self._write(payload) != count:
                 self.note_failure(what)
-                return False
-            if sent != count:
-                self.note_failure(what + " (partial)")
                 return False
             return True
 
-    def _send(self, stroke, what):
-        """Deliver one stroke. Returns True on success. NEVER swallows a
-        failure silently: any refused/errored send degrades the backend
-        AND returns False, so callers can hand the event to Win32."""
+    def _send(self, payload, what):
+        """Deliver one 24-byte stroke. Returns True on success. NEVER
+        swallows a failure silently: any refused/errored send degrades
+        the backend AND returns False, so callers can hand the event
+        to Win32."""
         with self._lock:
-            if self._degraded:
+            if self._degraded or self._handle is None:
                 return False
-            try:
-                n = self._dll.interception_send(self._context, self._dev,
-                                                ctypes.byref(stroke), 1)
-            except Exception:
-                self.note_failure(what)
-                return False
-            if not n:
+            if self._write(payload) != 1:
                 self.note_failure(what)
                 return False
             return True
+
+
+class RebindBackend(object):
+    """External-HID output through a Rebind Lua server (opt-in).
+
+    The same wire protocol Unibot speaks - websocket JSON frames:
+      {"t": "ping"}                              -> {"t": "pong"}
+      {"t": "hid.move", "dx": dx, "dy": dy}      relative motion step
+      {"t": "hid.press", "code": "Mouse1", "hold_ms": N}  tap unit
+    The server drives genuine hardware-level input, so games that
+    ignore SendInput AND lack the Interception driver still obey -
+    which is exactly why Unibot works where synthetic injection
+    does not. Unibot never touches Interception; neither does this.
+
+    repeat_hold = True: the protocol has press UNITS (down+up pairs),
+    not separate down/up transitions, so a sustained hold cannot be
+    a held level here. Hold loops re-tap at tap_interval instead
+    (Unibot's target_cps idea) - full-auto weapons keep firing,
+    semi-autos fire per tap. Nothing can ever stick: release sends
+    nothing because nothing is held.
+    """
+
+    name = "rebind"
+    repeat_hold = True
+    tap_interval = 1.0 / 12.0
+    _CONNECT_TIMEOUT = 5.0
+    _PING_TIMEOUT = 3.0
+
+    def __init__(self, cfg):
+        import json as _json
+        self._json = _json
+        self._lock = threading.Lock()
+        self._degraded = False
+        self._reason = ""
+        try:
+            url = str(cfg.get("server_url") or DEFAULT_SERVER_URL).strip()
+        except Exception:
+            url = ""
+        if not url:
+            raise RuntimeError("server_url is empty")
+        self.url = url
+        self._ws = None
+        try:
+            import websocket
+        except ImportError as exc:
+            raise RuntimeError("websocket-client is not installed "
+                               "(python -m pip install websocket-client)") \
+                from exc
+        try:
+            ws = websocket.create_connection(
+                url, timeout=self._CONNECT_TIMEOUT)
+            ws.settimeout(self._PING_TIMEOUT)
+        except Exception as exc:
+            raise RuntimeError("could not reach %s (%r)" % (url, exc)) \
+                from exc
+        self._ws = ws
+
+
+        try:
+            ws.send(self._json.dumps({"t": "ping"}))
+            raw = ws.recv()
+            import json as _j2
+            if not (isinstance(raw, str) and
+                    _j2.loads(raw).get("t") == "pong"):
+                raise RuntimeError("no pong from %s" % url)
+        except Exception as exc:
+            try:
+                ws.close()
+            except Exception:
+                pass
+            self._ws = None
+            raise RuntimeError("Rebind handshake failed (%r)" % (exc,)) \
+                from exc
+        log("Input: Rebind connected (%s) - hardware-level output." % url)
+
+    @classmethod
+    def available(cls, url=None):
+        """True when the library is installed AND a server answers."""
+        try:
+            import websocket
+            ws = websocket.create_connection(
+                str(url or DEFAULT_SERVER_URL), timeout=2.0)
+        except Exception:
+            return False
+        try:
+            ws.settimeout(2.0)
+            ws.send('{"t":"ping"}')
+            import json as _j
+            return _j.loads(ws.recv()).get("t") == "pong"
+        except Exception:
+            return False
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def ok_for_button(self):
+        return not self._degraded
+
+    def note_failure(self, where):
+        if not self._degraded:
+            self._degraded = True
+            log("Input: Rebind %s failed; falling back to Windows "
+                "injection for the rest of this session." % (where,))
+
+    def _send_obj(self, obj, what):
+        """One JSON frame; False (degraded) on any transport problem."""
+        with self._lock:
+            if self._degraded or self._ws is None:
+                return False
+            try:
+                self._ws.send(self._json.dumps(obj, separators=(",", ":")))
+            except Exception:
+                try:
+                    self._ws.close()
+                except Exception:
+                    pass
+                self._ws = None
+                self.note_failure(what)
+                return False
+            return True
+
+    def move(self, x, y):
+        """Absolute move expressed as one relative step (the protocol
+        only carries deltas). Falls back to Win32 when the cursor
+        cannot be read - without an anchor a delta is a guess."""
+        import win32rt
+        tx, ty = int(x), int(y)
+        try:
+            cx, cy = win32rt.get_cursor_pos()
+        except Exception:
+            self.note_failure("cursor read")
+            return Win32Backend().move(tx, ty)
+        if (cx, cy) == (tx, ty):
+            return True
+        if not self._send_obj({"t": "hid.move",
+                               "dx": tx - cx, "dy": ty - cy}, "move"):
+            return Win32Backend().move(tx, ty)
+        return True
+
+    def nudge(self, dx, dy):
+        """One relative steering step - the per-frame hold primitive.
+
+        No settle loop, no cursor reads (Unibot's send_move is equally
+        fire-and-forget): the next steering frame corrects from a
+        fresh sighting instead.
+        """
+        dx, dy = int(round(dx)), int(round(dy))
+        if not dx and not dy:
+            return True
+        if not self._send_obj({"t": "hid.move",
+                               "dx": dx, "dy": dy}, "nudge"):
+            return Win32Backend().nudge(dx, dy)
+        return True
+
+    def button(self, down, index=0):
+        """Down = one tap unit (Unibot's 40-80 ms hold); up = no-op.
+
+        There is deliberately no held level to release - see the
+        class docstring. Sustained fire comes from the caller's
+        hold loop re-tapping at tap_interval.
+        """
+        if index:
+            note_mouse_role("Server input", index)
+            return False
+        if not down:
+            return self.ok_for_button()
+        import random
+        hold_ms = random.randint(40, 80)
+        if not self._send_obj({"t": "hid.press", "code": "Mouse1",
+                               "hold_ms": hold_ms}, "press"):
+            return Win32Backend().button(True)
+        return True
+
+    def send_click(self, index=0):
+        """One tap unit, Unibot-style (press, brief visible hold)."""
+        import random
+        import time as _time
+        if index:
+            note_mouse_role("Server input", index)
+            return False
+        if not self.ok_for_button():
+            return False
+        hold_ms = random.randint(40, 80)
+        if not self._send_obj({"t": "hid.press", "code": "Mouse1",
+                               "hold_ms": hold_ms}, "click"):
+            return False
+        _time.sleep(random.uniform(0.025, 0.034))
+        return True
+
+
+class _ExpectedLedger(object):
+    """Remembers our own synthetic button events so the low-level hook
+    can tell them apart from the user's physical ones.
+
+    Driver-level output (Interception) arrives with NO injected mark -
+    indistinguishable from hardware. Without this, our own synthetic
+    UP lands in the tracked button state and ends a real hold (mode-1
+    hold steering died exactly this way: snap-click, synthetic UP,
+    session never armed), and our synthetic DOWN can queue phantom
+    jobs. Win32 output needs none of this (SendInput marks LLMHF_INJECTED,
+    which the hook already skips).
+
+    Matching is kind + position + fresh: a real press far away, or
+    more than _EXPECT_TTL after the send, never matches. Entries are
+    consumed FIFO; orphans (failed sends) expire instead of piling up.
+
+    The window is deliberately TIGHT (0.3 s, 12 px): synthetic output
+    arrives back within milliseconds at exact coordinates, so anything
+    looser eats the user's own re-taps - aimed follow-up shots at the
+    same spot inside the window pass through raw, unassisted and
+    unlogged, which reads exactly like "single clicks never assist".
+    """
+
+    def __init__(self, tol=12, ttl=0.3, cap=8):
+        self._tol = tol
+        self._ttl = ttl
+        self._cap = cap
+        self._items = []
+        self._lock = threading.Lock()
+
+    def expect(self, kind, x=None, y=None):
+        with self._lock:
+            now = time.perf_counter()
+            self._items = [e for e in self._items
+                           if now - e[3] <= self._ttl][-self._cap:]
+            self._items.append((kind, x, y, now))
+
+    def consume(self, kind, x, y):
+        with self._lock:
+            now = time.perf_counter()
+            live = [e for e in self._items
+                    if now - e[3] <= self._ttl]
+            self._items[:] = live[-self._cap:]
+            for i, (k, ex, ey, _t) in enumerate(self._items):
+                if k != kind:
+                    continue
+                if ex is not None and ey is not None \
+                        and (abs(x - ex) > self._tol
+                             or abs(y - ey) > self._tol):
+                    continue
+                del self._items[i]
+                return True
+            return False
+
+
+INPUT_BACKEND_CHOICES = ("win32", "driver", "server")
+
+_BACKEND_ALIASES = {
+    "win32": "win32",
+    "driver": "driver",
+    "interception": "driver",
+    "server": "server",
+    "rebind": "server",
+}
+
+
+
+# =====================================================================
+# Controller OUTPUT
+#
+# XInput reads a pad; it cannot make one. So a controller recording or a
+# pad macro has to leave the program through one of two doors:
+#
+#   ViGemPadBackend    a real virtual Xbox 360 pad, via the ViGEmBus driver
+#                      and its ViGEmClient.dll. Games that only accept a
+#                      controller see genuine pad input. Opt-in exactly like
+#                      the Interception driver: nothing is bundled, and a
+#                      missing driver or DLL degrades instead of failing.
+#   EmulatedPadBackend no driver, no DLL. Pad output becomes keyboard and
+#                      mouse through the same SendInput path every other
+#                      backend uses, using the pad_emulate table.
+#
+# Contract (what assist.py consumes):
+#     button(index, down)   one pad button transition (gamepad.PAD_BUTTONS)
+#     axis(index, value)    one analogue axis (gamepad.PAD_AXES)
+#     flush()               publish the accumulated report (ViGEm only)
+#     ok_for_pad()          may pad output be sent right now
+#     note_failure(where)   log once and degrade
+#     close()               detach/release
+#     available()           classmethod: is this even possible right now
+# =====================================================================
+
+PAD_EMU_DEFAULT = gamepad.PAD_EMU_DEFAULT
+
+PAD_EMU_AXIS_STEP = 14.0
+
+_MOUSE_WORDS = {"mouse1": 0, "mouse2": 1, "mouse3": 2, "mouse4": 3, "mouse5": 4}
+
+
+def parse_emulation(spec):
+    """The pad_emulate table -> {button index: action or None}.
+
+    An action is ("key", mods, vk), ("mouse", button), ("wheel", notches) or
+    None ("off"). Semicolon-separated `button=output` pairs; unknown buttons
+    are ignored with a log line, unknown outputs make that ONE pair off
+    rather than throwing the whole table away.
+    """
+    import hotkeys
+    out = {}
+    raw = str(spec or "").strip()
+    if not raw:
+        return out
+    for pair in raw.split(";"):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            log("Controller: pad_emulate entry %r has no '='; ignored." % (pair,))
+            continue
+        name, value = pair.split("=", 1)
+        index = gamepad.parse_token(name)
+        if index is None:
+            log("Controller: pad_emulate names no button (%r); ignored." % (name,))
+            continue
+        value = value.strip().lower()
+        if not value or value == "off":
+            out[index] = None
+            continue
+        if value in _MOUSE_WORDS:
+            out[index] = ("mouse", _MOUSE_WORDS[value])
+            continue
+        if value in ("wheelup", "wheeldown"):
+            out[index] = ("wheel", 1 if value == "wheelup" else -1)
+            continue
+        if value in ("wheelleft", "wheelright"):
+            out[index] = ("hwheel", -1 if value == "wheelleft" else 1)
+            continue
+        parsed = hotkeys._parse_hotkey(value)
+        if parsed is None:
+            log("Controller: pad_emulate output %r for %s is not a key, a "
+                "mouse button or a wheel direction; that button stays off."
+                % (value, name))
+            out[index] = None
+            continue
+        out[index] = ("key", parsed[0] & 0x000F, parsed[1])
+    return out
+
+
+class _XUSB_REPORT(ctypes.Structure):
+    """The ViGEmBus payload. Its button mask is bit-for-bit the XInput mask
+    gamepad.py already builds, so a report needs no translation."""
+
+    _fields_ = [("wButtons", ctypes.c_ushort),
+                ("bLeftTrigger", ctypes.c_ubyte),
+                ("bRightTrigger", ctypes.c_ubyte),
+                ("sThumbLX", ctypes.c_short),
+                ("sThumbLY", ctypes.c_short),
+                ("sThumbRX", ctypes.c_short),
+                ("sThumbRY", ctypes.c_short)]
+
+
+_VIGEM_DLL_NAMES = ("ViGEmClient.dll", "ViGEmClient_x64.dll", "vigemclient.dll")
+
+_vigem_dll = None
+_vigem_tried = False
+_vigem_lock = threading.Lock()
+
+
+def _load_vigem():
+    global _vigem_dll, _vigem_tried
+    with _vigem_lock:
+        if _vigem_tried:
+            return _vigem_dll
+        _vigem_tried = True
+        if not IS_WINDOWS:
+            return None
+        for name in _VIGEM_DLL_NAMES:
+            try:
+                dll = ctypes.windll.LoadLibrary(name)
+            except Exception:
+                continue
+            try:
+                dll.vigem_alloc.restype = ctypes.c_void_p
+                dll.vigem_alloc.argtypes = []
+                dll.vigem_connect.restype = ctypes.c_ulong
+                dll.vigem_connect.argtypes = [ctypes.c_void_p]
+                dll.vigem_target_x360_alloc.restype = ctypes.c_void_p
+                dll.vigem_target_x360_alloc.argtypes = []
+                dll.vigem_target_add.restype = ctypes.c_ulong
+                dll.vigem_target_add.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+                dll.vigem_target_x360_update.restype = ctypes.c_ulong
+                dll.vigem_target_x360_update.argtypes = [
+                    ctypes.c_void_p, ctypes.c_void_p, _XUSB_REPORT]
+            except Exception:
+                continue
+            _vigem_dll = dll
+            return _vigem_dll
+        return None
+
+
+class ViGemPadBackend(object):
+    """A virtual Xbox 360 pad (ViGEmBus). True 1:1 controller output.
+
+    ViGEmBus is a signed kernel driver the user installs once, plus its
+    ViGEmClient.dll next to SnappyAI.exe. Neither is bundled: without them
+    `available()` is False and `make_pad_backend` falls back to emulation
+    after saying so once, which is exactly how the Interception backend
+    behaves. Every call is guarded and every failure degrades - a pad that
+    disappears mid-session must never take the assist engine with it.
+    """
+
+    name = "vigem"
+
+    VIGEM_ERROR_NONE = 0x20000000
+
+    def __init__(self, ctx=None):
+        self._lock = threading.Lock()
+        self._degraded = False
+        self._reason = ""
+        self._client = None
+        self._target = None
+        self._report = _XUSB_REPORT()
+        self._dirty = False
+        if ctx is not None:
+            return
+        dll = _load_vigem()
+        if dll is None:
+            self._reason = ("ViGEmClient.dll was not found next to the "
+                            "program or on PATH")
+            self._degraded = True
+            return
+        try:
+            self._client = dll.vigem_alloc()
+            if not self._client:
+                raise RuntimeError("vigem_alloc returned NULL")
+            error = dll.vigem_connect(self._client)
+            if error != self.VIGEM_ERROR_NONE:
+                raise RuntimeError("vigem_connect failed (0x%08X) - is the "
+                                   "ViGEmBus driver installed?" % (error,))
+            self._target = dll.vigem_target_x360_alloc()
+            if not self._target:
+                raise RuntimeError("vigem_target_x360_alloc returned NULL")
+            error = dll.vigem_target_add(self._client, self._target)
+            if error != self.VIGEM_ERROR_NONE:
+                raise RuntimeError("vigem_target_add failed (0x%08X)" % (error,))
+        except Exception as exc:
+            self._reason = "%r" % (exc,)
+            self._degraded = True
+            self.close()
+            return
+        log("Input: ViGEmBus virtual pad created - controller macros and "
+            "recordings are delivered as a real Xbox 360 controller.")
+
+    @classmethod
+    def available(cls):
+        """Cheap probe for the GUI: the client DLL loads and the driver answers."""
+        if not IS_WINDOWS:
+            return False
+        if _load_vigem() is None:
+            return False
+        probe = cls()
+        ok = probe.ok_for_pad()
+        probe.close()
+        return ok
+
+    def ok_for_pad(self):
+        return (not self._degraded) and self._client is not None \
+            and self._target is not None
+
+    def note_failure(self, where):
+        if not self._degraded:
+            self._degraded = True
+            log("Input: ViGEmBus failed at %s%s - controller output falls "
+                "back to keyboard/mouse emulation."
+                % (where, (" (%s)" % self._reason) if self._reason else ""))
+
+    def button(self, index, down):
+        if not self.ok_for_pad():
+            return False
+        with self._lock:
+            try:
+                name = gamepad.PAD_BUTTONS[int(index)]
+            except (IndexError, TypeError, ValueError):
+                return False
+            # LT/RT are triggers, not buttons - they go via axis()
+            if name in ("lt", "rt"):
+                return True
+            mask = gamepad._XINPUT_MASKS.get(name)
+            if mask is None:
+                return False
+            if down:
+                self._report.wButtons |= mask
+            else:
+                self._report.wButtons &= ~mask & 0xFFFF
+            self._dirty = True
+
+    def axis(self, index, value):
+        if not self.ok_for_pad():
+            return False
+        try:
+            name = gamepad.PAD_AXES[int(index)]
+            value = gamepad.normalise_axis(int(index), value)
+        except (IndexError, TypeError, ValueError):
+            return False
+        with self._lock:
+            if name == "lt":
+                self._report.bLeftTrigger = value
+            elif name == "rt":
+                self._report.bRightTrigger = value
+            elif name == "lx":
+                self._report.sThumbLX = value
+            elif name == "ly":
+                self._report.sThumbLY = value
+            elif name == "rx":
+                self._report.sThumbRX = value
+            elif name == "ry":
+                self._report.sThumbRY = value
+            self._dirty = True
+        return True
+
+    def flush(self):
+        if not self.ok_for_pad():
+            return False
+        with self._lock:
+            if not self._dirty:
+                return True
+            self._dirty = False
+            report = _XUSB_REPORT()
+            ctypes.memmove(ctypes.byref(report), ctypes.byref(self._report),
+                           ctypes.sizeof(report))
+        dll = _load_vigem()
+        try:
+            error = dll.vigem_target_x360_update(self._client, self._target,
+                                                 report)
+        except Exception as exc:
+            self._reason = "%r" % (exc,)
+            self.note_failure("vigem_target_x360_update")
+            return False
+        if error != self.VIGEM_ERROR_NONE:
+            self._reason = "update returned 0x%08X" % (error,)
+            self.note_failure("vigem_target_x360_update")
+            return False
+        return True
+
+    def release_all(self):
+        """Zero the report and publish it, so nothing can stay held."""
+        with self._lock:
+            self._report = _XUSB_REPORT()
+            self._dirty = True
+        return self.flush()
+
+    def close(self):
+        dll = _vigem_dll
+        with self._lock:
+            client, target = self._client, self._target
+            self._client = None
+            self._target = None
+        if dll is None:
+            return
+        try:
+            if target is not None:
+                if client is not None and hasattr(dll, "vigem_target_remove"):
+                    dll.vigem_target_remove(client, target)
+                if hasattr(dll, "vigem_target_free"):
+                    dll.vigem_target_free(target)
+            if client is not None:
+                if hasattr(dll, "vigem_disconnect"):
+                    dll.vigem_disconnect(client)
+                if hasattr(dll, "vigem_free"):
+                    dll.vigem_free(client)
+        except Exception:
+            pass
+
+
+class EmulatedPadBackend(object):
+    """Pad output as keyboard and mouse. No driver, no DLL, works everywhere.
+
+    The table is `pad_emulate` (see PAD_EMU_DEFAULT). Stick axes move the
+    cursor by a fixed step per call, so a recorded sweep replays as the same
+    sweep at the rate it was recorded; triggers and buttons become the mapped
+    key or mouse transition and can be HELD, because inject_key sends real
+    down/up transitions rather than a single tap.
+    """
+
+    name = "emulated"
+
+    def __init__(self, cfg=None, table=None):
+        self._lock = threading.Lock()
+        self._degraded = not IS_WINDOWS
+        self._reason = "" if IS_WINDOWS else "not running on Windows"
+        self._held = set()
+        if table is not None:
+            self.table = dict(table)
+        else:
+            spec = PAD_EMU_DEFAULT
+            if cfg is not None:
+                try:
+                    spec = str(cfg.get("pad_emulate") or PAD_EMU_DEFAULT)
+                except Exception:
+                    spec = PAD_EMU_DEFAULT
+            self.table = parse_emulation(spec)
+
+    @classmethod
+    def available(cls):
+        return IS_WINDOWS
+
+    def ok_for_pad(self):
+        return not self._degraded
+
+    def note_failure(self, where):
+        if not self._degraded:
+            self._degraded = True
+            self._reason = str(where)
+            log("Input: controller emulation failed at %s - controller output "
+                "stops until the next start." % (where,))
+
+    def button(self, index, down):
+        if not self.ok_for_pad():
+            return False
+        import win32rt
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            return False
+        action = self.table.get(index)
+        if action is None:
+            return True
+        kind = action[0]
+        try:
+            if kind == "key":
+                return bool(win32rt.inject_key(action[1], action[2], bool(down)))
+            if kind == "mouse":
+                return bool(win32rt.inject_mouse(action[1], bool(down)))
+            if down and kind == "wheel":
+                return bool(win32rt.inject_wheel(action[1]))
+            if down and kind == "hwheel":
+                return bool(win32rt.inject_wheel(action[1], horizontal=True))
+        except Exception as exc:
+            self.note_failure("%s(%r)" % (kind, exc))
+            return False
+        with self._lock:
+            if down:
+                self._held.add(index)
+            else:
+                self._held.discard(index)
+        return True
+
+    def axis(self, index, value):
+        """Stick axes walk the cursor; triggers have no emulated meaning
+        beyond the button the threshold already produced."""
+        if not self.ok_for_pad():
+            return False
+        import win32rt
+        try:
+            name = gamepad.PAD_AXES[int(index)]
+        except (IndexError, TypeError, ValueError):
+            return False
+        if name not in ("lx", "ly", "rx", "ry"):
+            return True
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return False
+        # XInput reports +Y as UP and the screen grows downwards, so the
+        # vertical axis is negated. Each axis is normalised on its own here:
+        # a recording stores one axis per step, so the radial deadzone that
+        # the live drive path uses has nothing to pair it with.
+        zone = gamepad.DEADZONE_LEFT if name in ("lx", "ly") \
+            else gamepad.DEADZONE_RIGHT
+        if name in ("lx", "rx"):
+            fx, _fy = gamepad.apply_deadzone(value, 0, zone)
+            fy = 0.0
+        else:
+            _fx, fy = gamepad.apply_deadzone(0, -value, zone)
+            fx = 0.0
+        if abs(fx) < 1e-6 and abs(fy) < 1e-6:
+            return True
+        try:
+            x, y = win32rt.get_cursor_pos()
+            step = PAD_EMU_AXIS_STEP
+            return bool(win32rt.move_cursor(int(round(x + fx * step)),
+                                            int(round(y + fy * step))))
+        except Exception as exc:
+            self.note_failure("axis(%r)" % (exc,))
+            return False
+
+    def flush(self):
+        return True
+
+    def release_all(self):
+        with self._lock:
+            held = sorted(self._held)
+            self._held.clear()
+        for index in held:
+            try:
+                self.button(index, False)
+            except Exception:
+                continue
+        return True
+
+    def close(self):
+        self.release_all()
+
+
+def make_pad_backend(cfg):
+    """The controller output door. ALWAYS returns something usable.
+
+    pad_output = vigem      -> ViGemPadBackend when the driver and its client
+      DLL answer, emulation otherwise (logged once).
+    pad_output = emulate    -> EmulatedPadBackend, never touching ViGEm.
+    pad_output = auto (default) -> ViGEm when available, emulation otherwise.
+    """
+    choice = str((cfg.get("pad_output", "auto") if cfg is not None else "auto")
+                 or "auto").strip().lower()
+    _EMU = ("emulate", "emulated", "km", "keyboard")
+    if choice not in ("auto", "vigem", "vigembus") + _EMU:
+        log("Input: pad_output %r is not one of auto, vigem, emulate; using "
+            "auto." % (choice,))
+        choice = "auto"
+    if choice in _EMU:
+        return EmulatedPadBackend(cfg)
+
+    # Probe the DLL, not the driver: available() would create a real virtual
+    # pad and destroy it again, so a machine without ViGEmBus would still
+    # flash a phantom Xbox 360 controller into every game's controller list
+    # on each start-up.
+    if _load_vigem() is None:
+        if choice == "vigem":
+            log("Input: pad_output = vigem was requested but ViGEmClient.dll "
+                "could not be loaded. Put it next to SnappyAI.exe (and "
+                "install the ViGEmBus driver); until then controller output "
+                "uses keyboard/mouse emulation.")
+        return EmulatedPadBackend(cfg)
+
+    be = None
+    reason = ""
+    try:
+        be = ViGemPadBackend()
+        if be.ok_for_pad():
+            return be
+        reason = be._reason
+    except Exception as exc:
+        reason = "%r" % (exc,)
+    if be is not None:
+        be.close()
+    if choice == "vigem":
+        log("Input: pad_output = vigem was requested but no virtual pad could "
+            "be created (%s). Install the ViGEmBus driver, then reboot; until "
+            "then controller output uses keyboard/mouse emulation."
+            % (reason or "unknown reason",))
+    return EmulatedPadBackend(cfg)
 
 
 def make_input_backend(cfg):
     """Build the configured backend; ALWAYS returns something usable.
 
     input_backend = win32   (default)  -> Win32Backend, nothing loaded.
-    input_backend = interception       -> InterceptionBackend if the DLL
-      and driver answer, Win32Backend otherwise (logged once).
+    input_backend = driver             -> InterceptionBackend if the
+      driver answers, Win32Backend otherwise (logged once). No DLL
+      is involved: strokes go straight to keyboard.sys/mouse.sys.
+    input_backend = server             -> RebindBackend if the companion
+      websocket server answers, Win32Backend otherwise (logged once).
+    The pre-v8 spellings "interception" and "rebind" are still accepted.
     """
-    choice = str(cfg.get("input_backend", "win32") or "win32").lower()
-    if choice == "interception":
+    raw = str(cfg.get("input_backend", "win32") or "win32").strip().lower()
+    choice = _BACKEND_ALIASES.get(raw)
+    if choice is None:
+        log("Input: input_backend %r is not one of %s; using the standard "
+            "Windows method." % (raw, ", ".join(INPUT_BACKEND_CHOICES)))
+        return Win32Backend()
+    if choice == "server":
+        try:
+            be = RebindBackend(cfg)
+            if be.ok_for_button():
+                return be
+        except Exception as exc:
+            log("Input: Rebind unavailable (%r); using the "
+                "standard Windows method." % (exc,))
+            be = None
+        where = getattr(be, "url", None) if be is not None else None
+        reason = getattr(be, "_reason", "") if be is not None else ""
+        if where is None and not reason:
+            why = ("could not reach the Rebind server (is it running? "
+                   "same address Unibot uses, default "
+                   "ws://127.0.0.1:19561)")
+        elif reason:
+            why = "startup check failed: %s" % reason
+        else:
+            why = "Rebind server at %s did not answer" % where
+        log("Input: Rebind selected but not working (%s). Using "
+            "the standard Windows method." % why)
+        return Win32Backend()
+    if choice == "driver":
         try:
             be = InterceptionBackend()
             if be.ok_for_button():
@@ -1025,24 +1481,14 @@ def make_input_backend(cfg):
             log("Input: Interception unavailable (%r); using the "
                 "standard Windows method." % (exc,))
             be = None
-        where = getattr(InterceptionBackend, "_loaded_path", None)
         reason = getattr(be, "_reason", "") if be is not None else ""
-        if where is None:
-            why = ("interception.dll was not found next to the program "
-                   "or on PATH")
-        elif reason:
-            # v8.56: say exactly what failed instead of blaming the user's
-            # driver install by default. The previous blanket "kernel
-            # driver did not answer" message fired even when the real
-            # cause was our own probe timing out or discovery finding no
-            # mouse device - and after three revisions of wrong guesses it
-            # was no longer trustworthy.
+        if reason:
             why = "startup check failed: %s" % reason
         else:
-            why = ("interception.dll loaded from %s and answered, but no "
-                   "mouse device was found behind it - confirm the driver "
-                   "is installed ('interception.exe install' from an "
-                   "admin prompt, then reboot)" % where)
+            why = ("no mouse device answered - confirm the driver is "
+                   "installed ('interception.exe install' from an "
+                   "admin prompt, then reboot) and the mouse is plugged "
+                   "in before Snappy AI starts")
         log("Input: Interception selected but not working (%s). Using "
             "the standard Windows method." % why)
     return Win32Backend()

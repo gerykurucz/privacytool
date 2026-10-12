@@ -1,15 +1,3 @@
-"""Tiny dependency-free Ed25519 (RFC 8032) sign + verify.
-
-Why hand-rolled: the entitlement file lives in a PUBLIC GitHub repo and
-is fetched without authentication, so it must carry a signature the exe
-can *verify* with a public key while only the GitHub Action ever holds
-the private one. Pulling `cryptography`/PyNaCl into the frozen exe for
-one signature per start is not worth it; the RFC reference arithmetic
-is ~80 lines and is cross-checked against the `cryptography` package in
-winsim/run_all_tests.sh (test stage 2b).
-
-Speed is irrelevant here: one verify per app start and per re-check.
-"""
 
 import hashlib
 
@@ -59,7 +47,7 @@ def _decode_point(s):
 def _encode_point(pt):
     x, y, z, _t = pt
     if z == 0:
-        return (0).to_bytes(32, "little")
+        return _encode_point((0, 1, 1, 0))
     zi = _inv(z)
     x = x * zi % _P
     y = y * zi % _P
@@ -93,7 +81,8 @@ def _point_equal(a, b):
 
 
 def public_from_secret(secret):
-    """32-byte seed -> 32-byte public key."""
+    if len(secret) != 32:
+        raise ValueError("secret must be 32 bytes")
     h = _sha512(secret)
     a = int.from_bytes(h[:32], "little")
     a &= (1 << 254) - 8
@@ -102,7 +91,8 @@ def public_from_secret(secret):
 
 
 def sign(secret, message):
-    """RFC 8032 pure Ed25519: 64-byte signature over message."""
+    if len(secret) != 32:
+        raise ValueError("secret must be 32 bytes")
     h = _sha512(secret)
     a = int.from_bytes(h[:32], "little")
     a &= (1 << 254) - 8
@@ -117,7 +107,6 @@ def sign(secret, message):
 
 
 def verify(pub, message, sig):
-    """True only for a valid 64-byte signature under pub."""
     try:
         if len(sig) != 64 or len(pub) != 32:
             return False

@@ -1,6 +1,3 @@
-"""Windows runtime: ctypes bindings, DPI awareness, cursor helpers,
-capture backends (dxcam fast path + mss fallback) and audio/voice
-feedback. Importable on any platform - contents exist on Windows only."""
 
 import threading
 import time
@@ -25,10 +22,10 @@ if IS_WINDOWS:
     WM_KEYUP = 0x0101
     LLKHF_INJECTED = 0x00000010
 
-    # v8.46: the macro recorder captures EVERY physical mouse event,
-    # so the hook now also sees moves, middle-button clicks and the
-    # double-click message (recorded as a second left-down: the
-    # recorded rhythm reproduces the double-click on playback).
+
+
+
+
     WM_MOUSEMOVE = 0x0200
     WM_LBUTTONDOWN = 0x0201
     WM_LBUTTONUP = 0x0202
@@ -39,6 +36,8 @@ if IS_WINDOWS:
 
     WM_MBUTTONDOWN = 0x0207
     WM_MBUTTONUP = 0x0208
+    WM_XBUTTONDOWN = 0x020B
+    WM_XBUTTONUP = 0x020C
 
     LLMHF_INJECTED = 0x00000001
     LLMHF_LOWER_IL_INJECTED = 0x00000002
@@ -51,7 +50,7 @@ if IS_WINDOWS:
     VK_CONTROL = 0x11
     VK_MENU = 0x12
     VK_LBUTTON = 0x01
-    VK_RBUTTON = 0x02   # live cross-check in assist._mouse2_hold_check
+    VK_RBUTTON = 0x02
     VK_LWIN = 0x5B
 
     SM_XVIRTUALSCREEN = 76
@@ -61,12 +60,20 @@ if IS_WINDOWS:
 
     INPUT_MOUSE = 0
     INPUT_KEYBOARD = 1
+    MOUSEEVENTF_MOVE = 0x0001
     MOUSEEVENTF_LEFTDOWN = 0x0002
     MOUSEEVENTF_LEFTUP = 0x0004
     MOUSEEVENTF_RIGHTDOWN = 0x0008
     MOUSEEVENTF_RIGHTUP = 0x0010
     MOUSEEVENTF_MIDDLEDOWN = 0x0020
     MOUSEEVENTF_MIDDLEUP = 0x0040
+    MOUSEEVENTF_XDOWN = 0x0080
+    MOUSEEVENTF_XUP = 0x0100
+    MOUSEEVENTF_WHEEL = 0x0800
+    MOUSEEVENTF_HWHEEL = 0x1000
+    XBUTTON1 = 0x0001
+    XBUTTON2 = 0x0002
+    WHEEL_DELTA = 120
     KEYEVENTF_KEYUP = 0x0002
 
     WPARAM_T = ctypes.c_size_t
@@ -75,6 +82,12 @@ if IS_WINDOWS:
 
     class POINT(ctypes.Structure):
         _fields_ = [("x", wt.LONG), ("y", wt.LONG)]
+
+    class _CURSORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wt.DWORD),
+                    ("flags", wt.DWORD),
+                    ("hCursor", wt.HANDLE),
+                    ("pt", POINT)]
 
     class MSLLHOOKSTRUCT(ctypes.Structure):
         _fields_ = [
@@ -196,6 +209,11 @@ if IS_WINDOWS:
     user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 
     user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+    try:
+        user32.GetCursorInfo.restype = wt.BOOL
+        user32.GetCursorInfo.argtypes = [ctypes.POINTER(_CURSORINFO)]
+    except Exception:
+        pass
 
     if hasattr(user32, "GetPhysicalCursorPos"):
         user32.GetPhysicalCursorPos.argtypes = [ctypes.POINTER(POINT)]
@@ -211,19 +229,12 @@ if IS_WINDOWS:
     user32.SendInput.restype = wt.UINT
     user32.SendInput.argtypes = [wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 
-    # Mod-mask bits (HOTKEY_MODS layout: ctrl 2, alt 1, shift 4, win 8)
-    # to the virtual keys that carry them, in press order.
+
+
     _MACRO_MOD_VKS = ((0x0004, VK_SHIFT), (0x0002, VK_CONTROL),
                       (0x0001, VK_MENU), (0x0008, VK_LWIN))
 
     def inject_combo(mods, vk):
-        """
-        Press and release mods+vk as injected keystrokes (macro engine).
-
-        One SendInput call for the whole down/up sequence so Windows
-        cannot interleave foreign input mid-combo. Injected events carry
-        LLMF_INJECTED, so Snappy AI's own hooks ignore them.
-        """
         seq = [mv for mask, mv in _MACRO_MOD_VKS if mods & mask]
         seq.append(vk)
 
@@ -241,41 +252,101 @@ if IS_WINDOWS:
             inputs.append(inp)
 
         arr = (INPUT * len(inputs))(*inputs)
-        user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+        try:
+            sent = user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+        except Exception:
+            return False
+        return sent == len(inputs)
 
-    # v8.46 recording playback: recorded steps carry mouse moves and
-    # button transitions of ALL THREE buttons, so the worker needs a
-    # cursor teleport and one injected down/up per button. Injected
-    # mouse events carry LLMHF_INJECTED, so Snappy AI's own hooks
-    # (assistance AND the recorder) ignore them - playback can never
-    # feed itself back into a recording.
+
+
+
+
+
+
+    def _key_input(vk, up):
+        inp = INPUT()
+        inp.type = INPUT_KEYBOARD
+        inp.u.ki.wVk = vk
+        inp.u.ki.dwFlags = KEYEVENTF_KEYUP if up else 0
+        return inp
+
+    def inject_key(mods, vk, down):
+        """A modifier+key transition that can be HELD, unlike inject_combo.
+
+        Down presses the modifiers then the key; up releases the key then the
+        modifiers in reverse, so a held controller button behaves exactly like
+        a held key on the keyboard and nothing is ever left stuck.
+        """
+        held = [mv for mask, mv in _MACRO_MOD_VKS if mods & mask]
+        if down:
+            order = [(k, False) for k in held] + [(vk, False)]
+        else:
+            order = [(vk, True)] + [(k, True) for k in reversed(held)]
+        inputs = [_key_input(k, up) for k, up in order]
+        if not inputs:
+            return False
+        arr = (INPUT * len(inputs))(*inputs)
+        try:
+            sent = user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
+        except Exception:
+            return False
+        return sent == len(inputs)
+
     _MOUSE_BTN_FLAGS = (
         (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
         (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+        (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP),
+        (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP),
     )
 
+    _MOUSE_BTN_DATA = (0, 0, 0, XBUTTON1, XBUTTON2)
+
     def move_cursor(x, y):
-        """Teleport the cursor (playback of a recorded move)."""
-        user32.SetCursorPos(int(x), int(y))
+        try:
+            return bool(user32.SetCursorPos(int(x), int(y)))
+        except Exception:
+            return False
 
     def inject_mouse(button, down):
-        """One injected mouse-button transition: button 0=left,
-        1=right, 2=middle; down True presses, False releases."""
-        flags = _MOUSE_BTN_FLAGS[int(button)]
+        """One button transition. 0=left 1=right 2=middle 3=XBUTTON1 4=XBUTTON2.
+
+        The two side buttons need mouseData as well as the XDOWN/XUP flags,
+        which is why the table carries a third column.
+        """
+        button = int(button)
+        if not 0 <= button < len(_MOUSE_BTN_FLAGS):
+            return False
+        flags = _MOUSE_BTN_FLAGS[button]
         inp = INPUT()
         inp.type = INPUT_MOUSE
         inp.u.mi.dwFlags = flags[0] if down else flags[1]
-        user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        if _MOUSE_BTN_DATA[button]:
+            inp.u.mi.mouseData = _MOUSE_BTN_DATA[button]
+        try:
+            return user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+        except Exception:
+            return False
+
+    def inject_wheel(clicks, horizontal=False):
+        """Scroll wheel notches (negative = down/left). Never raises."""
+        try:
+            steps = int(clicks)
+        except (TypeError, ValueError):
+            return False
+        if not steps:
+            return False
+        inp = INPUT()
+        inp.type = INPUT_MOUSE
+        inp.u.mi.dwFlags = MOUSEEVENTF_HWHEEL if horizontal else MOUSEEVENTF_WHEEL
+        inp.u.mi.mouseData = (steps * WHEEL_DELTA) & 0xFFFFFFFF
+        try:
+            return user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT)) == 1
+        except Exception:
+            return False
 
     def apply_window_theme(hwnd, dark, caption_rgb, text_rgb):
-        """
-        Colour the window title bar to match the app theme.
-
-        Windows 11: caption + text colour attributes.
-        Windows 10: immersive dark mode toggle (best available).
-        Silently does nothing on older systems.
-        """
         try:
             dwm = ctypes.windll.dwmapi
 
@@ -285,117 +356,126 @@ if IS_WINDOWS:
 
             flag = ctypes.c_int(1 if dark else 0)
             dwm.DwmSetWindowAttribute(
-                ctypes.c_void_p(hwnd), 20,  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                ctypes.c_void_p(hwnd), 20,
                 ctypes.byref(flag), ctypes.sizeof(flag))
 
             cap = ctypes.c_int(_cref(caption_rgb))
             dwm.DwmSetWindowAttribute(
-                ctypes.c_void_p(hwnd), 35,  # DWMWA_CAPTION_COLOR
+                ctypes.c_void_p(hwnd), 35,
                 ctypes.byref(cap), ctypes.sizeof(cap))
 
             txt = ctypes.c_int(_cref(text_rgb))
             dwm.DwmSetWindowAttribute(
-                ctypes.c_void_p(hwnd), 36,  # DWMWA_TEXT_COLOR
+                ctypes.c_void_p(hwnd), 36,
                 ctypes.byref(txt), ctypes.sizeof(txt))
         except Exception:
             pass
 
     def get_cursor_pos():
         pt = POINT()
-
-        try:
-            if hasattr(user32, "GetPhysicalCursorPos"):
-                if user32.GetPhysicalCursorPos(ctypes.byref(pt)):
-                    return int(pt.x), int(pt.y)
-        except Exception:
-            pass
-
         try:
             if user32.GetCursorPos(ctypes.byref(pt)):
                 return int(pt.x), int(pt.y)
         except Exception:
             pass
+        raise RuntimeError("GetCursorPos failed")
 
-        return 0, 0
+    def cursor_visible():
+        try:
+            ci = _CURSORINFO()
+            ci.cbSize = ctypes.sizeof(_CURSORINFO)
+            if user32.GetCursorInfo(ctypes.byref(ci)):
+                return bool(ci.flags & 0x00000001)
+        except Exception:
+            pass
+        return True
 
     def setup_dpi_awareness():
+        try:
+            if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+                return
+        except (AttributeError, OSError):
+            pass
+        try:
+            if ctypes.windll.shcore.SetProcessDpiAwareness(2) == 0:
+                return
+        except (AttributeError, OSError):
+            pass
+        try:
+            if user32.SetProcessDPIAware():
+                return
+        except (AttributeError, OSError):
+            pass
+
+    MDT_EFFECTIVE_DPI = 0
+    MONITOR_DEFAULTTONEAREST = 2
+
+    def get_dpi_scale(x=None, y=None):
+        """Effective DPI scale of the monitor the point sits on (cursor when
+        no point is given).
+
+        The process asks for PER_MONITOR_AWARE_V2, so the SYSTEM dpi is the
+        wrong answer on a mixed-DPI setup: it scaled every radius, centre box
+        and step cap by the primary monitor's factor while the cursor was on
+        the other one. Per-monitor first, system dpi next, 1.0 last.
         """
-        Physical pixels everywhere. Important on scaled displays.
-        """
         try:
-            user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-            return
+            if x is None or y is None:
+                x, y = get_cursor_pos()
+            user32.MonitorFromPoint.restype = ctypes.c_void_p
+            user32.MonitorFromPoint.argtypes = [POINT, wt.DWORD]
+            monitor = user32.MonitorFromPoint(POINT(int(x), int(y)),
+                                              MONITOR_DEFAULTTONEAREST)
+            if monitor:
+                shcore = ctypes.windll.shcore
+                shcore.GetDpiForMonitor.restype = ctypes.c_long
+                shcore.GetDpiForMonitor.argtypes = [
+                    ctypes.c_void_p, ctypes.c_int,
+                    ctypes.POINTER(wt.UINT), ctypes.POINTER(wt.UINT)]
+                dpi_x = wt.UINT()
+                dpi_y = wt.UINT()
+                if shcore.GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI,
+                                           ctypes.byref(dpi_x),
+                                           ctypes.byref(dpi_y)) == 0 \
+                        and dpi_x.value:
+                    return max(0.5, float(dpi_x.value) / 96.0)
+        except (AttributeError, OSError, ValueError, TypeError):
+            pass
+        try:
+            get_dpi = getattr(user32, "GetDpiForSystem", None)
+            if get_dpi is not None:
+                try:
+                    get_dpi.restype = ctypes.c_uint
+                except Exception:
+                    pass
+                dpi = get_dpi()
+                if dpi:
+                    return max(0.5, float(dpi) / 96.0)
         except (AttributeError, OSError):
             pass
-
-        try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
-            return
-        except (AttributeError, OSError):
-            pass
-
-        try:
-            user32.SetProcessDPIAware()
-        except (AttributeError, OSError):
-            pass
-
-    def get_dpi_scale():
-        try:
-            dpi = user32.GetDpiForSystem()
-            if dpi:
-                return max(1.0, float(dpi) / 96.0)
-        except (AttributeError, OSError):
-            pass
-
         return 1.0
 
     def virtual_screen():
-        """(x, y, w, h) of the whole virtual screen, physical pixels."""
         try:
             return (int(user32.GetSystemMetrics(SM_XVIRTUALSCREEN)),
                     int(user32.GetSystemMetrics(SM_YVIRTUALSCREEN)),
                     int(user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
                     int(user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)))
         except Exception:
-            try:                        # primary screen fallback
+            try:
                 return (0, 0, int(user32.GetSystemMetrics(0)),
                         int(user32.GetSystemMetrics(1)))
             except Exception:
                 return 0, 0, 1920, 1080
 
-    # v8.27: the Feedback class (voice announcements via a powershell
-    # speech child + winsound beeps) was removed with the whole voice-
-    # feedback feature - the product is silent by design now.
+
+
+
 
     class CaptureBackend(object):
-        """
-        Region screenshots as BGR uint8 arrays.
-
-        Default (auto): mss - GDI screen grabs, ~5-15 ms per region.
-        Slower than Desktop Duplication but it sees what ordinary users
-        see, including games and hardware-accelerated apps; DXGI can
-        return stale/black frames there (v8.52: auto used to prefer
-        dxcam, which broke assistance inside live tests).
-        Opt-in alternatives via capture_backend:
-        - dxcam: Windows Desktop Duplication, typically 1-3 ms per
-          region grab, but blind to some swapchains; mss stays fallback;
-        - wgc: Windows.Graphics.Capture via the optional 'windows-capture'
-          package - push-based (frames only when the screen changes),
-          more reliable than Desktop Duplication on some laptops and HDR
-          setups. Any wgc failure degrades to the dxcam/mss chain.
-        Two dxcam quirks are handled here:
-        - dxcam only covers the primary display and returns None when the
-          desktop has not redrawn since the last frame, so every grab
-          falls back to mss when needed;
-        - dxcam allows one camera per output per process, so the camera
-          is shared behind a lock (SnappyAI scans are serialized anyway),
-          while mss objects stay per-thread as mss requires.
-        """
 
         def __init__(self, prefer="auto"):
             self.prefer = str(prefer or "auto").lower()
-            # v8.52: capture_backend = dxcam is now honoured as a real
-            # preference instead of being silently folded into "auto".
             self._dx_forced = self.prefer == "dxcam"
             self._dx_cam = None
             self._dx_tried = False
@@ -404,31 +484,31 @@ if IS_WINDOWS:
             self._wgc_state = None
             self._wgc_tried = False
             self._wgc_lock = threading.Lock()
-            # mss instances are per-thread (mss requires that), but the
-            # click workers are DISPOSABLE threads and mss has no GC
-            # finaliser - every instance holds GDI handles. The cache
-            # keeps (thread, instance) pairs and closes the instances of
-            # dead threads on the next grab, so long sessions cannot
-            # leak GDI objects.
+
+
+
+
+
+
             self._mss_lock = threading.Lock()
-            self._mss_cache = {}     # thread ident -> (thread, sct)
+            self._mss_cache = {}
             self._notes = set()
             self._note_lock = threading.Lock()
-            # v8.51 diagnostics: per-backend frame statistics so the
-            # console can answer "why does assist fail in THIS app?"
-            # without guessing. A grab that comes back all-black or
-            # frozen is the signature of a capture API that cannot see
-            # the target window (hardware-accelerated overlays, DRM,
-            # protected game renderers); knowing WHICH backend produced
-            # the bad frames tells us what to tell the user.
+
+
+
+
+
+
+
             self.stats_lock = threading.Lock()
             self.stats = {
                 "dxcam": {"frames": 0, "black": 0, "frozen": 0},
                 "mss": {"frames": 0, "black": 0, "frozen": 0},
                 "wgc": {"frames": 0, "black": 0, "frozen": 0},
             }
-            self._last_sig = {}      # backend -> last frame checksum
-            self._bad_noted = False  # warn once, not every frame
+            self._last_sig = {}
+            self._bad_noted = False
 
         def _note(self, msg):
             with self._note_lock:
@@ -437,17 +517,6 @@ if IS_WINDOWS:
                     log(msg)
 
         def _record(self, which, img):
-            """Classify one grabbed frame (cheaply) and update stats.
-
-            black  - every pixel dark: the capture API returned an
-                     empty surface (typical for DirectX/Vulkan/DRM
-                     windows under GDI-based capture);
-            frozen - identical bytes to this backend's previous frame
-                     even though other backends keep seeing changes;
-                     Desktop Duplication on static content legitimately
-                     falls through to mss, so a frozen dxcam frame only
-                     counts when it repeats exactly.
-            """
             try:
                 if img is None or img.size == 0:
                     sig = None
@@ -462,12 +531,7 @@ if IS_WINDOWS:
                         self._check_bad(which)
                         return
                     sig = hash(view.tobytes())
-                    # A solid-colour frame (e.g. a black letterbox bar
-                    # inside an otherwise live capture) is NOT evidence
-                    # of a blind backend - only repeated identical
-                    # frames are. Blank content counts as frozen when
-                    # it repeats; changing content resets the count.
-                    blank = bool((view == view.flat[0]).all())
+                    blank = bool((view == view[0, 0]).all())
                 with self.stats_lock:
                     st = self.stats[which]
                     st["frames"] += 1
@@ -477,7 +541,7 @@ if IS_WINDOWS:
                     if sig is not None:
                         self._last_sig[which] = sig
             except Exception:
-                return  # diagnostics must never break a click path
+                return
             self._check_bad(which)
 
         def _check_bad(self, which):
@@ -491,13 +555,12 @@ if IS_WINDOWS:
                     "Capture: %s frames are mostly black or unchanging "
                     "(%d/%d). The screen looks correct to YOUR eyes but "
                     "this engine cannot see the target window - common "
-                    "with games, hardware-accelerated apps and DRM video. "
+                    "with hardware-accelerated apps and DRM video. "
                     "Try capture_backend = wgc (or mss) in Settings; run "
                     "'capture report' in the console for details."
                     % (which, bad, total))
 
         def capture_report(self):
-            """One-line summary per backend, for the console."""
             lines = []
             active = ("wgc" if self.prefer == "wgc" and self._wgc_state
                       else "dxcam" if (self._dx_forced or self.prefer == "wgc")
@@ -533,9 +596,9 @@ if IS_WINDOWS:
 
                 if self.prefer not in ("auto", "dxcam", "wgc"):
                     return None
-                # v8.52: 'auto' deliberately skips dxcam (see grab()). The
-                # user can still opt in explicitly with capture_backend =
-                # dxcam; wgc keeps its own dxcam fast path as before.
+
+
+
                 if self.prefer == "auto":
                     return None
 
@@ -568,15 +631,15 @@ if IS_WINDOWS:
                     thr, sct = self._mss_cache[tid]
                     if not thr.is_alive():
                         try:
-                            sct.close()   # release GDI handles
+                            sct.close()
                         except Exception:
                             pass
                         del self._mss_cache[tid]
                 entry = self._mss_cache.get(cur.ident)
                 if entry is None:
                     import mss
-                    # mss >= 10 renamed the factory (mss.mss -> mss.MSS);
-                    # support both so no DeprecationWarning is printed.
+
+
                     factory = getattr(mss, "MSS", None) or mss.mss
                     sct = factory()
                     self._mss_cache[cur.ident] = (cur, sct)
@@ -585,25 +648,6 @@ if IS_WINDOWS:
             return sct
 
         def _wgc(self):
-            """
-            Opt-in Windows.Graphics.Capture backend (capture_backend =
-            wgc), via the optional 'windows-capture' package (MIT,
-            Rust core, abi3 wheel - works on modern CPythons).
-
-            Push-based: the session delivers a frame ONLY when the
-            screen actually changes and the latest one is kept in a
-            buffer, so grab() is a lock + crop - no per-grab capture
-            round trip, and a static desktop costs nothing (dxcam
-            instead returns None on static screens and burns retries).
-            The cursor is excluded (cursor_capture=False) so the
-            pointer can never pollute colour statistics, and the
-            yellow WGC border is disabled (draw_border=False).
-
-            Any failure (package missing, old Windows, RDP quirks)
-            degrades permanently to the dxcam/mss chain with a single
-            log note - assistance never depends on this path.
-            Returns (capture, state, lock) or None.
-            """
             with self._wgc_lock:
                 if self._wgc_tried:
                     return self._wgc_state
@@ -624,22 +668,26 @@ if IS_WINDOWS:
                 try:
                     state = {"frame": None, "closed": False, "errs": 0}
                     lock = threading.Lock()
+
+
+
+
                     cap = WindowsCapture(cursor_capture=False,
                                          draw_border=False,
-                                         monitor_index=0,
+                                         monitor_index=1,
                                          window_name=None)
 
                     def on_frame_arrived(frame, control):
                         try:
                             arr = None
-                            # windows-capture 2.x hands the WGC callback
-                            # a Frame with .frame_buffer: a ZERO-COPY
-                            # view (h, w, 4) of the native mapped frame,
-                            # in capture order BGRA. It must be copied
-                            # out immediately - the native buffer is
-                            # recycled by the session once the callback
-                            # returns (keeping a view would pin a WGC
-                            # pool buffer and starve delivery).
+
+
+
+
+
+
+
+
                             buf = getattr(frame, "frame_buffer", None)
                             if buf is not None:
                                 arr = np.ascontiguousarray(
@@ -648,10 +696,10 @@ if IS_WINDOWS:
                             else:
                                 to_bgr = getattr(frame, "to_bgr", None)
                                 if to_bgr is not None:
-                                    # binding variants that expose the
-                                    # colour format themselves (handles
-                                    # bgra8, rgba8 and float16 HDR):
-                                    # always yields BGR 0..255.
+
+
+
+
                                     arr = np.ascontiguousarray(
                                         to_bgr(), dtype=np.uint8)
                                 else:
@@ -661,7 +709,7 @@ if IS_WINDOWS:
                                             to_np(), dtype=np.uint8
                                         )[:, :, :3]
                             if arr is None:
-                                # older/alternate binding surface
+
                                 ptr = getattr(frame, "buffer_pointer", None)
                                 fw = int(getattr(frame, "width", 0) or 0)
                                 fh = int(getattr(frame, "height", 0) or 0)
@@ -679,8 +727,8 @@ if IS_WINDOWS:
                                 raise RuntimeError("frame has no usable "
                                                    "numpy accessor")
                             with lock:
-                                # owned, contiguous BGR copy - never a
-                                # view into the recycled native buffer
+
+
                                 state["frame"] = np.ascontiguousarray(
                                     arr, dtype=np.uint8)
                                 state["errs"] = 0
@@ -716,13 +764,26 @@ if IS_WINDOWS:
                     with lock:
                         first = state["frame"]
                     if first is None:
+                        try:
+                            stop = getattr(cap, "stop", None)
+                            if callable(stop):
+                                stop()
+                        except Exception:
+                            pass
+                        try:
+                            close = getattr(cap, "close", None)
+                            if callable(close):
+                                close()
+                        except Exception:
+                            pass
                         raise RuntimeError("session delivered no frame "
                                            "within 1.5 s")
 
                     self._wgc_state = (cap, state, lock)
                     self._note("Capture: wgc active "
-                               "(Windows.Graphics.Capture, monitor 0, "
-                               "frames %dx%d); dxcam/mss kept as fallback."
+                               "(Windows.Graphics.Capture, primary "
+                               "monitor, frames %dx%d); dxcam/mss kept "
+                               "as fallback."
                                % (first.shape[0], first.shape[1]))
                 except Exception as exc:
                     self._wgc_state = None
@@ -731,8 +792,6 @@ if IS_WINDOWS:
                 return self._wgc_state
 
         def _wgc_grab(self, region):
-            """Crop the latest buffered WGC frame (owned BGR copy), or
-            None when the region is not fully inside monitor 0."""
             st = self._wgc()
             if st is None:
                 return None
@@ -748,18 +807,19 @@ if IS_WINDOWS:
                 return None
             fh, fw = frame.shape[:2]
             l, t, r, b = region
-            # The session captures monitor 0 only: unless the region
-            # lies FULLY inside that frame, the crop would be shifted
-            # or short (and downstream code indexes it with cursor-
-            # relative coordinates). Anything else - other monitors,
-            # negative virtual-screen coords, overhang - hands over to
-            # the dxcam/mss chain, which covers the virtual screen.
+            try:
+                vx, vy, _vw, _vh = virtual_screen()
+            except Exception:
+                vx, vy = 0, 0
+            l -= vx
+            t -= vy
+            r -= vx
+            b -= vy
             if l < 0 or t < 0 or r > fw or b > fh or r <= l or b <= t:
                 return None
             return np.ascontiguousarray(frame[t:b, l:r])
 
         def grab(self, left, top, right, bottom):
-            """Return a contiguous BGR uint8 array, or None on failure."""
             region = (int(left), int(top), int(right), int(bottom))
 
             if self.prefer == "wgc":
@@ -767,30 +827,30 @@ if IS_WINDOWS:
                 if shot is not None:
                     self._record("wgc", shot)
                     return shot
-                # fall through: wgc -> dxcam -> mss
 
-            # v8.52: the AUTO default is mss-first. Desktop Duplication
-            # (dxcam) returns the last composited desktop image; games and
-            # fullscreen hardware-accelerated apps present through their own
-            # swapchain and often never repaint that image, so dxcam hands
-            # back stale/black frames there while GDI (mss) keeps seeing the
-            # window content - exactly the standalone addon's behaviour,
-            # which was mss-only. dxcam stays available as an explicit opt-in
-            # (capture_backend = dxcam) for users who want its 1-3 ms grabs
-            # in ordinary apps; 'wgc' keeps using it as its fast path.
+
+
+
+
+
+
+
+
+
+
             if self._dx_forced or self.prefer == "wgc":
                 cam = self._dx()
                 if cam is not None:
                     frame = None
                     try:
                         with self._dx_lock:
-                            # Retry briefly: a static desktop delivers no new
-                            # frames, and grab() then returns None. Five tries
-                            # is the sweet spot - a live frame almost always
-                            # arrives within the first two, and each extra
-                            # millisecond here delays the click itself. Past
-                            # that the mss fallback below is faster than
-                            # waiting on a desktop that is not redrawing.
+
+
+
+
+
+
+
                             for _ in range(5):
                                 frame = cam.grab(region=region)
                                 if frame is not None:
@@ -798,10 +858,10 @@ if IS_WINDOWS:
                                 time.sleep(0.001)
                     except Exception as exc:
                         frame = None
-                        # A dead camera (output taken over by a game, driver
-                        # hiccup) must not stall every future grab: after
-                        # repeated failures give up on dxcam and let mss take
-                        # over permanently.
+
+
+
+
                         self._dx_failures += 1
                         if self._dx_failures >= 30:
                             self._note("Capture: dxcam failing repeatedly (%r); "

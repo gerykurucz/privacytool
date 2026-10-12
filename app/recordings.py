@@ -1,38 +1,9 @@
-"""Saved macro recordings: storage, validation, export/import.
-
-Recordings live in macros.json next to the configuration: variable-
-length user data does not belong in config.json.
-A recording is a NAME plus a list of tagged steps - the delay is
-always the LAST field of a step and is the gap BEFORE it, so playback
-reproduces the rhythm of the original recording - plus its own
-playback style ("loop": play once vs repeat until stopped).
-
-v8.46 step format: a recording captures EVERYTHING the user did, so
-a step is one of
-    (STEP_KEY,    mods, vk, delay)             a key press
-    (STEP_MOVE,   x, y, delay)                 a cursor move
-    (STEP_BUTTON, btn, phase, x, y, delay)     a mouse button down/up
-Old v8.27 files carry bare (mods, vk, delay) keyboard steps; they
-load fine and are normalized to the tagged form.
-
-v8.27: the old slot assignments are gone. The library is simply a
-numbered list (1. icon clicks, 2. icon selects, ...) and the
-Ctrl+1..Ctrl+5 hotkeys replay recordings BY LIST POSITION. Old
-macros.json files load fine: their "slot" fields are ignored and a
-missing "loop" flag defaults to play-once.
-
-v8.46: the library cap is 5 - exactly the recordings Ctrl+1..5 can
-launch by list position - and MAX_STEPS grew because cursor trails
-cost steps too (moves merge while they keep coming, see assist.py).
-
-This is an offline, local convenience store - a corrupt or hand-edited
-file warns and degrades to an empty library, never crashes.
-"""
 
 import json
 import os
 import time
 
+import gamepad
 from config import config_dir
 from core import log
 
@@ -49,50 +20,74 @@ i18n.publish("en", {
 })
 
 REC_FILE = "macros.json"
+PAD_REC_FILE = "pad_macros.json"
 
-# v8.46 tagged step format (see the module docstring).
+
 STEP_KEY = 0
 STEP_MOVE = 1
 STEP_BUTTON = 2
+STEP_PAD_BUTTON = 3
+STEP_PAD_AXIS = 4
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE = 0, 1, 2
+BTN_X1, BTN_X2 = 3, 4
+BTN_ALL = (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_X1, BTN_X2)
 PHASE_DOWN, PHASE_UP = 0, 1
 
-MAX_STEPS = 2000         # per recording (longer recordings truncate)
-MAX_RECORDINGS = 5       # library cap: Ctrl+1..5 play positions 1..5
-MAX_DELAY_MS = 5000      # per-step gap clamp
+MAX_STEPS = 2000
+MAX_RECORDINGS = 5
+MAX_DELAY_MS = 5000
 MAX_NAME_LEN = 60
-MAX_COORD = 65536        # sane bound for virtual-screen coordinates
+MAX_COORD = 65536
+FORMAT_VERSION = 3
+
+
+def pad_axis_range(index):
+    """(low, high) for a recorded controller axis, per gamepad.PAD_AXES."""
+    name = gamepad.PAD_AXES[index]
+    if name in ("lt", "rt"):
+        return 0, gamepad.TRIGGER_FULL
+    return -gamepad.AXIS_FULL - 1, gamepad.AXIS_FULL
+
+
+def describe_step(step):
+    """One step as a short human string, for the console and the log."""
+    try:
+        tag = step[0]
+        if tag == STEP_KEY:
+            return "key(%d,%d)+%dms" % (step[1], step[2], step[3])
+        if tag == STEP_MOVE:
+            return "move(%d,%d)+%dms" % (step[1], step[2], step[3])
+        if tag == STEP_BUTTON:
+            return "btn%d:%s+%dms" % (step[1], "up" if step[2] else "down", step[5])
+        if tag == STEP_PAD_BUTTON:
+            return "pad %s:%s+%dms" % (gamepad.PAD_BUTTONS[step[1]],
+                                       "up" if step[2] else "down", step[3])
+        if tag == STEP_PAD_AXIS:
+            return "pad %s=%d+%dms" % (gamepad.PAD_AXES[step[1]], step[2], step[3])
+        return "step%d" % tag
+    except (IndexError, TypeError):
+        return "?"
 
 
 def validate_steps(raw):
-    """
-    Coerce a json step list into tagged tuples, or None.
-
-    Accepted shapes (v8.46):
-        3 items  (mods, vk, delay)             legacy keyboard step
-        4 items  (STEP_KEY, mods, vk, delay)
-        4 items  (STEP_MOVE, x, y, delay)
-        6 items  (STEP_BUTTON, btn, phase, x, y, delay)
-    Modifier masks must stay within ctrl/alt/shift/win, buttons and
-    phases must be known, coordinates must be plausible; delays clamp
-    instead of failing. Anything else -> None (caller warns).
-    Legacy 3-item steps normalize to the tagged form, so the rest of
-    the product only ever sees tagged steps.
-    """
     if not isinstance(raw, (list, tuple)) or not raw:
         return None
     if len(raw) > MAX_STEPS:
-        return None
+        raw = list(raw)[:MAX_STEPS]
     out = []
     for step in raw:
         if not isinstance(step, (list, tuple)):
             return None
         try:
-            vals = [int(v) for v in step]
+            vals = []
+            for v in step:
+                if isinstance(v, bool) or not isinstance(v, int):
+                    return None
+                vals.append(v)
         except (TypeError, ValueError):
             return None
         n = len(vals)
-        if n == 3:                          # legacy keyboard step
+        if n == 3:
             tag, mods, vk, delay = STEP_KEY, vals[0], vals[1], vals[2]
         elif n == 4:
             tag = vals[0]
@@ -106,12 +101,31 @@ def validate_steps(raw):
                 out.append((STEP_MOVE, x, y,
                             max(0, min(MAX_DELAY_MS, delay))))
                 continue
+            elif tag == STEP_PAD_BUTTON:
+                btn, phase, delay = vals[1], vals[2], vals[3]
+                if not 0 <= btn < len(gamepad.PAD_BUTTONS):
+                    return None
+                if phase not in (PHASE_DOWN, PHASE_UP):
+                    return None
+                out.append((STEP_PAD_BUTTON, btn, phase,
+                            max(0, min(MAX_DELAY_MS, delay))))
+                continue
+            elif tag == STEP_PAD_AXIS:
+                axis, value, delay = vals[1], vals[2], vals[3]
+                if not 0 <= axis < len(gamepad.PAD_AXES):
+                    return None
+                low, high = pad_axis_range(axis)
+                if not low <= value <= high:
+                    return None
+                out.append((STEP_PAD_AXIS, axis, value,
+                            max(0, min(MAX_DELAY_MS, delay))))
+                continue
             else:
                 return None
         elif n == 6 and vals[0] == STEP_BUTTON:
             btn, phase, x, y, delay = vals[1], vals[2], vals[3], \
                 vals[4], vals[5]
-            if btn not in (BTN_LEFT, BTN_RIGHT, BTN_MIDDLE):
+            if btn not in BTN_ALL:
                 return None
             if phase not in (PHASE_DOWN, PHASE_UP):
                 return None
@@ -123,7 +137,7 @@ def validate_steps(raw):
             continue
         else:
             return None
-        # the keyboard path (legacy or tagged)
+
         if not 0 <= mods <= 0x000F or not 1 <= vk <= 254:
             return None
         out.append((STEP_KEY, mods, vk, max(0, min(MAX_DELAY_MS, delay))))
@@ -131,7 +145,6 @@ def validate_steps(raw):
 
 
 def _as_bool(value, default=False):
-    """Bool from json/ini values that may arrive as strings."""
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -142,11 +155,6 @@ def _as_bool(value, default=False):
 
 
 def _clean_rec(data, fallback_name):
-    """Validate one recording dict; returns a clean copy or None.
-
-    Legacy "slot" fields (pre-v8.27) are dropped silently; the list
-    position is the only "number" a recording has now.
-    """
     if not isinstance(data, dict):
         return None
     steps = validate_steps(data.get("steps"))
@@ -164,16 +172,18 @@ def _clean_rec(data, fallback_name):
 
 
 class RecordingStore(object):
-    """The macro recording library (macros.json)."""
+    """The macro library. Every mutation persists: callers used to have to
+    remember save() after remove/set_name/set_loop, and any caller that
+    forgot lost the change at the next start-up."""
 
     def __init__(self, path=None):
         self.path = path or os.path.join(config_dir(), REC_FILE)
         self.recordings = []
-        self.revision = 0          # GUI pollers watch this
+        self.revision = 0
         self._next_id = 1
         self._load()
 
-    # ---------------- storage ----------------
+
     def _load(self):
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
@@ -187,9 +197,6 @@ class RecordingStore(object):
             return
         for i, item in enumerate(items):
             if len(self.recordings) >= MAX_RECORDINGS:
-                # v8.46: the library is five recordings - exactly what
-                # Ctrl+1..5 can launch. A hand-edited/legacy file with
-                # more keeps its first five.
                 log("macros.json: library cap is %d - ignored %d extra "
                     "recording(s)." % (MAX_RECORDINGS, len(items) - i))
                 break
@@ -201,39 +208,53 @@ class RecordingStore(object):
 
     def save(self):
         try:
-            with open(self.path, "w", encoding="utf-8") as fh:
+            folder = os.path.dirname(self.path)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump({"recordings": [
                     {"id": r["id"], "name": r["name"], "loop": r["loop"],
                      "created": r["created"],
                      "steps": [list(s) for s in r["steps"]]}
                     for r in self.recordings]}, fh, indent=2)
+            os.replace(tmp, self.path)
             self.revision += 1
             return True
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
             log("macros.json: could not save (%r)" % (exc,))
             return False
 
-    # ---------------- library ----------------
+
     def _add_clean(self, rec):
         rec["id"] = self._next_id
         self._next_id += 1
         self.recordings.append(rec)
         return rec
 
-    def add(self, name, steps):
+    def add(self, name, steps, loop=False):
         if len(self.recordings) >= MAX_RECORDINGS:
             log("Recording library full (%d) - remove one first."
                 % MAX_RECORDINGS)
             return None
-        rec = _clean_rec({"name": name, "steps": steps, "loop": False,
-                          "created": int(time.time())}, name)
+        clean_name = str(name or "").strip()[:MAX_NAME_LEN]
+        if not clean_name:
+            return None
+        rec = _clean_rec({"name": clean_name, "steps": steps, "loop": loop,
+                          "created": int(time.time())}, clean_name)
         if rec is None:
             return None
         self._add_clean(rec)
-        self.revision += 1
+        if not self.save():
+            self.recordings.remove(rec)
+            return None
         return rec
 
     def get(self, rid):
+        try:
+            rid = int(rid)
+        except (TypeError, ValueError):
+            return None
         for rec in self.recordings:
             if rec["id"] == rid:
                 return rec
@@ -244,34 +265,37 @@ class RecordingStore(object):
         if rec is None:
             return False
         self.recordings.remove(rec)
-        self.revision += 1
+        if not self.save():
+            self.recordings.append(rec)  # rollback
+            return False
         return True
 
     def set_name(self, rid, name):
-        """Rename a recording (1..MAX_NAME_LEN chars after strip)."""
         rec = self.get(rid)
         if rec is None:
             return False
         name = str(name or "").strip()[:MAX_NAME_LEN]
         if not name:
             return False
+        old_name = rec["name"]
         rec["name"] = name
-        self.revision += 1
+        if not self.save():
+            rec["name"] = old_name
+            return False
         return True
 
     def set_loop(self, rid, loop):
-        """Per-recording playback style: False = play once,
-        True = repeat until stopped."""
         rec = self.get(rid)
         if rec is None:
             return False
-        rec["loop"] = bool(loop)
-        self.revision += 1
+        old_loop = rec["loop"]
+        rec["loop"] = _as_bool(loop, False)
+        if not self.save():
+            rec["loop"] = old_loop
+            return False
         return True
 
     def by_position(self, position):
-        """The recording at 1-based list position n (Ctrl+n hotkeys),
-        or None when the library is shorter than that."""
         try:
             n = int(position)
         except (TypeError, ValueError):
@@ -286,44 +310,59 @@ class RecordingStore(object):
         return max(self.recordings,
                    key=lambda r: (r["created"], r["id"]))
 
-    # ---------------- share ----------------
-    def export_to(self, path, rid=None):
-        """One recording (rid) or the whole library as a bundle.
 
-        v8.46: format marker 2 - the steps are tagged (keys, cursor
-        moves, mouse buttons). Marker 1 files (keyboard-only steps)
-        still IMPORT fine; they simply predate mouse capture."""
+    def export_to(self, path, rid=None):
         if rid is not None:
             rec = self.get(rid)
             if rec is None:
                 return False, i18n.L("rec.no_sel")
-            payload = {"snappyai_recording": 2, "name": rec["name"],
+            payload = {"snappyai_recording": FORMAT_VERSION,
+                       "name": rec["name"],
                        "loop": rec["loop"],
+                       "created": rec["created"],
                        "steps": [list(s) for s in rec["steps"]]}
         else:
-            payload = {"snappyai_recordings": 2, "recordings": [
+            payload = {"snappyai_recordings": FORMAT_VERSION,
+                       "recordings": [
                 {"name": r["name"], "loop": r["loop"],
+                 "created": r["created"],
                  "steps": [list(s) for s in r["steps"]]}
                 for r in self.recordings]}
+        folder = os.path.dirname(path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        tmp = path + ".tmp"
         try:
-            with open(path, "w", encoding="utf-8") as fh:
+            with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2)
+            os.replace(tmp, path)
             return True, i18n.L("rec.exported", path)
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
             return False, i18n.L("rec.export_fail", exc)
 
     def import_from(self, path):
-        """Accept a single-recording file or a bundle; validate all."""
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError) as exc:
             return False, i18n.L("rec.import_fail", exc)
 
+        # Check format version
+        version = data.get("snappyai_recording") or data.get("snappyai_recordings")
+        if version is not None and version != FORMAT_VERSION:
+            log("recordings: import format version %r != %d, ignoring" % (version, FORMAT_VERSION))
+            return False, i18n.L("rec.bad_version", version, FORMAT_VERSION)
+
         items = []
         if isinstance(data, dict):
             if isinstance(data.get("recordings"), list):
                 items = data["recordings"]
+                if not items:
+                    return True, i18n.L("rec.imported", 0, "")
             elif "steps" in data:
                 items = [data]
         if not items:
@@ -334,22 +373,28 @@ class RecordingStore(object):
             rec = _clean_rec(item, "Imported %d" % (i + 1))
             if rec is None:
                 continue
-            rec["created"] = int(time.time())
+            try:
+                _orig_created = int(item.get("created", 0)) if isinstance(item, dict) else 0
+            except (TypeError, ValueError):
+                _orig_created = 0
+            rec["created"] = _orig_created if _orig_created > 0 else int(time.time())
             if len(self.recordings) >= MAX_RECORDINGS:
                 log("Import stopped at %d recordings (library full)."
                     % MAX_RECORDINGS)
                 break
-            # unique-ish name
             names = set(r["name"] for r in self.recordings)
             base, n = rec["name"], 2
             while rec["name"] in names:
-                rec["name"] = "%s (%d)" % (base, n)
+                suffix = " (%d)" % n
+                rec["name"] = base[:max(0, MAX_NAME_LEN - len(suffix))] \
+                    + suffix
                 n += 1
             self._add_clean(rec)
             added += 1
 
         if added:
-            self.save()
+            if not self.save():
+                return False, i18n.L("rec.import_fail", "could not save library")
         return added > 0, i18n.L(
             "rec.imported", added,
             "" if added else i18n.L("rec.imported_none"))

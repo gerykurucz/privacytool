@@ -25,35 +25,72 @@ Accepted forms, for accent_color and exclude_color alike:
     [[60, 120, 220], "red"]                       -> several, JSON list
 """
 
-def parse_accent(spec):
-    """
-    Parse an accent colour spec into an OpenCV-style HSV centre.
+ACCENT_PRESETS = {
+    "red":    (0.0, 210.0, 190.0),
+    "orange": (15.0, 215.0, 215.0),
+    "yellow": (30.0, 215.0, 215.0),
+    "green":  (60.0, 210.0, 180.0),
+    "cyan":   (90.0, 210.0, 200.0),
+    "blue":   (120.0, 215.0, 200.0),
+    "purple": (145.0, 190.0, 180.0),
+    "pink":   (168.0, 150.0, 215.0),
+    "lime":   (45.0, 190.0, 200.0),
+    "teal":   (85.0, 220.0, 175.0),
+    "indigo": (130.0, 210.0, 175.0),
+    "brown":  (12.0, 165.0, 140.0),
+    "grey":   (0.0, 0.0, 150.0),
+    "gray":   (0.0, 0.0, 150.0),
+    "white":  (0.0, 0.0, 235.0),
+    "black":  (0.0, 0.0, 30.0),
+}
 
-    Accepts "off"/None (returns None), an "r,g,b" string (config files),
-    or an [r, g, b] list (JSON config). Returns (h 0-179, s 0-255,
-    v 0-255) or None.
-    """
+
+def parse_accent(spec):
     if spec is None:
         return None
 
-    if isinstance(spec, (list, tuple)):
+    # Handle numpy arrays and other sequence types
+    if hasattr(spec, '__iter__') and not isinstance(spec, (str, bytes)):
         try:
-            parts = [int(p) for p in spec]
+            spec = list(spec)
         except (TypeError, ValueError):
             return None
-    else:
-        s = str(spec).strip().lower()
-        if not s or s in ("off", "none", "disabled", "false"):
-            return None
-        try:
-            parts = [int(p.strip()) for p in s.split(",")]
-        except ValueError:
-            return None
 
+    if isinstance(spec, str):
+        preset = ACCENT_PRESETS.get(spec.strip().lower())
+        if preset is not None:
+            return preset
+        # Parse "r,g,b" format
+        try:
+            parts = [int(p.strip()) for p in spec.split(",")]
+        except (ValueError, OverflowError):
+            return None
+    elif isinstance(spec, (list, tuple)):
+        try:
+            if any(isinstance(p, bool) for p in spec):
+                return None
+            def _to_int(p):
+                if isinstance(p, int):
+                    return p
+                if isinstance(p, float):
+                    return int(p) if p.is_integer() else None
+                if isinstance(p, str):
+                    f = float(p)
+                    return int(f) if f.is_integer() else None
+                return None
+            parts = [_to_int(p) for p in spec]
+            if any(p is None for p in parts):
+                return None
+        except (TypeError, ValueError, OverflowError):
+            return None
+    else:
+        return None
     if len(parts) != 3:
         return None
-
-    r, g, b = (min(255, max(0, p)) for p in parts)
+    for p in parts:
+        if p < 0 or p > 255:
+            return None
+    r, g, b = parts
     rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
 
     mx = max(rf, gf, bf)
@@ -67,54 +104,26 @@ def parse_accent(spec):
     elif mx == rf:
         h = ((gf - bf) / d) % 6.0
     elif mx == gf:
-        h = (bf - rf) / d + 2.0
+        h = ((bf - rf) / d + 2.0) % 6.0
     else:
-        h = (rf - gf) / d + 4.0
+        h = ((rf - gf) / d + 4.0) % 6.0
 
-    return (h * 30.0, s * 255.0, v * 255.0)
-
-
-# Named colour families, in OpenCV-style HSV (h 0-179, s/v 0-255), so
-# "accent_color = blue" works without knowing any numbers. Grey/white/
-# black sit at zero saturation and match desaturated pixels of that
-# brightness. For unusual shades, give an explicit "r,g,b" instead.
-ACCENT_PRESETS = {
-    "red":    (0.0, 210.0, 190.0),
-    "orange": (15.0, 215.0, 215.0),
-    "yellow": (30.0, 215.0, 215.0),
-    "green":  (60.0, 210.0, 180.0),
-    "cyan":   (90.0, 210.0, 200.0),
-    "blue":   (120.0, 215.0, 200.0),
-    "purple": (145.0, 190.0, 180.0),
-    "pink":   (168.0, 150.0, 215.0),
-    # v8.49: the four material tones the GUI's preset grid offers. They
-    # were clickable swatches that stored "r,g,b" (so they worked), but a
-    # hand-written `accent_color = teal` silently parsed to nothing -
-    # every name the interface shows must be a name the engine knows.
-    "lime":   (45.0, 190.0, 200.0),
-    "teal":   (85.0, 220.0, 175.0),
-    "indigo": (130.0, 210.0, 175.0),
-    "brown":  (12.0, 165.0, 140.0),
-    "grey":   (0.0, 0.0, 150.0),
-    "gray":   (0.0, 0.0, 150.0),
-    "white":  (0.0, 0.0, 235.0),
-    "black":  (0.0, 0.0, 30.0),
-}
+    return (min(h * 30.0, 179.0), s * 255.0, v * 255.0)
 
 
 def parse_accents(spec):
-    """
-    Parse an accent spec into a list of HSV centres (possibly empty).
-
-    Accepts everything parse_accent does, plus several colours in one
-    spec, separated by ";": "blue; red", "60,120,220; 200,60,60", or a
-    JSON list like [[60, 120, 220], "red"]. Preset names are matched
-    case-insensitively.
-    """
     if spec is None:
         return []
 
     items = spec
+
+    # Handle numpy arrays and other sequence types (but not strings)
+    if hasattr(items, '__iter__') and not isinstance(items, (str, bytes)):
+        try:
+            items = list(items)
+        except (TypeError, ValueError):
+            return []
+
     if isinstance(items, str):
         s = items.strip()
         if not s or s.lower() in ("off", "none", "disabled", "false"):
@@ -124,15 +133,8 @@ def parse_accents(spec):
     if not isinstance(items, (list, tuple)):
         items = [items]
 
-    # v8.49: a BARE [r, g, b] triple. config.py has always accepted and
-    # stored that form from a hand-edited config.json ("accent_color also
-    # accepts [r, g, b]"), but a list is otherwise read as SEVERAL colour
-    # specs - so the three ints were each parsed on their own, each failed
-    # the "exactly three numbers" test, and the user's colour silently
-    # became "off" with no warning anywhere. Disambiguate: a list of three
-    # numbers is one colour; anything else is a list of colours.
     if (len(items) == 3 and not isinstance(items, str)
-            and all(isinstance(p, (int, float)) and not isinstance(p, bool)
+            and all(isinstance(p, (int, float, str)) and not isinstance(p, bool)
                     for p in items)):
         items = [items]
 
@@ -152,10 +154,9 @@ def parse_accents(spec):
 
 
 def hsv_to_rgb(h, s, v):
-    """OpenCV-style HSV (h 0-180, s/v 0-255) -> RGB 0-255 tuple."""
-    h = (float(h) * 2.0) % 360.0
-    s = float(s) / 255.0
-    v = float(v) / 255.0
+    h = max(0.0, min(359.999, float(h) * 2.0))
+    s = max(0.0, min(1.0, float(s) / 255.0))
+    v = max(0.0, min(1.0, float(v) / 255.0))
     c = v * s
     x = c * (1.0 - abs((h / 60.0) % 2.0 - 1.0))
     m = v - c
@@ -171,6 +172,17 @@ def hsv_to_rgb(h, s, v):
         r, g, b = x, 0.0, c
     else:
         r, g, b = c, 0.0, x
-    return (int(round((r + m) * 255.0)),
-            int(round((g + m) * 255.0)),
-            int(round((b + m) * 255.0)))
+    return (max(0, min(255, int(round((r + m) * 255.0)))),
+            max(0, min(255, int(round((g + m) * 255.0)))),
+            max(0, min(255, int(round((b + m) * 255.0)))))
+
+
+def _parse_accent(spec):
+    return parse_accent(spec)
+
+
+def _parse_accents(spec):
+    return parse_accents(spec)
+
+
+_ACCENT_PRESETS = ACCENT_PRESETS

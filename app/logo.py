@@ -1,19 +1,3 @@
-"""Embedded Snappy AI logo: the S-snake as ONE continuous tapered
-stroke - head (white eye, forked tongue) -> S body -> curl -> tapering
-under-band -> thin tail wire -> antenna dot. No flat cuts, no detached
-pieces. Fills the frame top-to-bottom.
-
-Why three representations:
-  * LOGO_PNG_B64  - transparent 128px PNG (source for compositing)
-  * ICO_B64       - multi-size .ico written to a temp file at runtime so
-                    Windows title bar / taskbar get a REAL icon
-                    (iconbitmap); Tk's iconphoto PNG path is unreliable
-                    on Windows.
-  * surface_image()- Tk on Windows ignores PNG alpha (transparent
-                    pixels render white), so the logo is composited onto
-                    the current surface colour at runtime and recomposited
-                    on every theme change.
-"""
 
 import base64
 import io
@@ -5273,21 +5257,21 @@ except ImportError:
     _HAVE_PIL = False
 
 
-# ----------------------------------------------------------------------
-# Dependency-free PNG decode (v8.49)
-#
-# surface_image() exists because Tk on Windows ignores PNG alpha: a
-# transparent logo composited by nobody renders as a WHITE SQUARE on the
-# dark theme. Its no-Pillow branch used to hand back the raw transparent
-# PNG with `hex_bg` accepted and ignored - reproducing exactly the artefact
-# the function was written to prevent, on the one path where Pillow was
-# missing.
-#
-# Pillow is bundled in practice, so this is a fallback for a partial or
-# hand-assembled install. It is ~50 lines of zlib + unfilter, in the same
-# spirit as edsig.py: a small standard-arithmetic dependency is cheaper
-# than a wrong-looking window.
-# ----------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def _paeth(a, b, c):
     p = a + b - c
@@ -5298,11 +5282,6 @@ def _paeth(a, b, c):
 
 
 def _decode_png_rgba(data):
-    """(width, height, bytearray rgba) for a non-interlaced 8-bit PNG.
-
-    Supports the colour types the embedded logo can actually be (2 = RGB,
-    6 = RGBA, and 0/4 grey variants for completeness). Raises ValueError on
-    anything else - the caller falls back rather than drawing garbage."""
     import struct
     import zlib
 
@@ -5379,7 +5358,6 @@ def _decode_png_rgba(data):
 
 
 def _composite_rgba(width, height, rgba, bg_rgb):
-    """Source-over composite onto a solid colour -> [(r, g, b)] rows."""
     br, bg_, bb = bg_rgb
     rows = []
     for y in range(height):
@@ -5402,7 +5380,6 @@ def _hex_rgb(hex_color):
 
 
 def photoimage(tk_module, size=None):
-    """Transparent logo at exactly `size` px (where alpha works)."""
     if size is None:
         return tk_module.PhotoImage(data=LOGO_PNG_B64)
     key = ("pil", size)
@@ -5414,7 +5391,7 @@ def photoimage(tk_module, size=None):
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             _CACHE[key] = buf.getvalue()
-        return tk_module.PhotoImage(data=_CACHE[key])
+        return tk_module.PhotoImage(data=base64.b64encode(_CACHE[key]).decode("ascii"))
     img = tk_module.PhotoImage(data=LOGO_PNG_B64)
     if size and img.width() > size:
         factor = max(1, round(img.width() / size))
@@ -5424,7 +5401,6 @@ def photoimage(tk_module, size=None):
 
 
 def surface_image(tk_module, size, hex_bg):
-    """Logo composited onto a solid surface colour (Windows-safe)."""
     key = (size, str(hex_bg))
     if key not in _SURF_CACHE:
         if _HAVE_PIL:
@@ -5438,22 +5414,22 @@ def surface_image(tk_module, size, hex_bg):
             base.convert("RGB").save(buf, format="PNG")
             _SURF_CACHE[key] = buf.getvalue()
         else:
-            # v8.49: composite by hand instead of returning the transparent
-            # PNG. See _decode_png_rgba above for why this branch exists.
+
+
             _SURF_CACHE[key] = None
     if _SURF_CACHE[key] is not None:
-        return tk_module.PhotoImage(data=_SURF_CACHE[key])
+        return tk_module.PhotoImage(data=base64.b64encode(_SURF_CACHE[key]).decode("ascii"))
 
-    # No Pillow: decode, composite onto the surface colour, and push the
-    # pixels in with PhotoImage.put (which takes colour rows directly, so no
-    # PNG encoder is needed).
+
+
+
     img = tk_module.PhotoImage(width=size, height=size)
     try:
         raw = base64.b64decode(LOGO_PNG_B64)
         w, h, rgba = _decode_png_rgba(raw)
         if (w, h) != (size, size):
-            # nearest-neighbour resample: the fallback path is a degraded
-            # path already, and this keeps it correct rather than clipped.
+
+
             rs = bytearray(size * size * 4)
             for y in range(size):
                 sy = min(h - 1, y * h // size)
@@ -5466,8 +5442,8 @@ def surface_image(tk_module, size, hex_bg):
         rows = _composite_rgba(w, h, rgba, _hex_rgb(hex_bg))
         img.put(rows, (0, 0))
     except Exception:
-        # last resort: the transparent PNG, exactly as before. Still wrong on
-        # a dark surface, but a missing logo is worse than a haloed one.
+
+
         try:
             img = tk_module.PhotoImage(data=LOGO_PNG_B64)
         except Exception:
@@ -5476,7 +5452,6 @@ def surface_image(tk_module, size, hex_bg):
 
 
 def ico_path():
-    """Path to a temp .ico file for root.iconbitmap()."""
     global _ICO_PATH
     if _ICO_PATH is None:
         import atexit
@@ -5497,5 +5472,12 @@ def ico_path():
 
 
 def png_bytes():
-    """Raw 128px transparent PNG bytes."""
     return _LOGO_BYTES
+
+
+PROVIDER_LOGO_B64 = {
+    "discord": "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",
+}
+
+def get_provider_logo(name):
+    return PROVIDER_LOGO_B64.get(name)
