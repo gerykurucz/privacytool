@@ -1,0 +1,25 @@
+{
+    "Timestamp":  "2026-04-11 16:18:38",
+    "AttemptedMACs":  {
+                          "Wi-Fi":  {
+                                        "OldMacAddress":  "38-BA-F8-44-24-79",
+                                        "Name":  "Wi-Fi",
+                                        "NewMacAddress":  "02-6F-69-F6-0D-F1"
+                                    },
+                          "Radmin VPN":  {
+                                             "OldMacAddress":  "02-50-EC-A5-97-E8",
+                                             "Name":  "Radmin VPN",
+                                             "NewMacAddress":  "02-7D-98-CE-1D-49"
+                                         },
+                          "Ethernet 2":  {
+                                             "OldMacAddress":  "D6-97-64-2B-A8-2B",
+                                             "Name":  "Ethernet 2",
+                                             "NewMacAddress":  "02-31-EE-ED-A9-F2"
+                                         },
+                          "Ethernet 3":  {
+                                             "OldMacAddress":  "0A-00-27-00-00-0E",
+                                             "Name":  "Ethernet 3",
+                                             "NewMacAddress":  "02-DA-92-E1-86-B1"
+                                         }
+                      }
+}

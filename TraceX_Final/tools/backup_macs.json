@@ -1,0 +1,30 @@
+{
+    "Timestamp":  "2026-04-11 16:18:38",
+    "MACAddresses":  [
+                         {
+                             "Status":  "Disconnected",
+                             "Name":  "Wi-Fi",
+                             "MacAddress":  "38-BA-F8-44-24-79"
+                         },
+                         {
+                             "Status":  "Up",
+                             "Name":  "Radmin VPN",
+                             "MacAddress":  "02-50-EC-A5-97-E8"
+                         },
+                         {
+                             "Status":  "Up",
+                             "Name":  "Ethernet 3",
+                             "MacAddress":  "0A-00-27-00-00-0E"
+                         },
+                         {
+                             "Status":  "Up",
+                             "Name":  "Ethernet 2",
+                             "MacAddress":  "D6-97-64-2B-A8-2B"
+                         },
+                         {
+                             "Status":  "Disconnected",
+                             "Name":  "Ethernet",
+                             "MacAddress":  "02-D3-44-1F-E0-DE"
+                         }
+                     ]
+}
